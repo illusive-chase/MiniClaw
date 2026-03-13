@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from memory.base import Memory
+from .base import Memory
 
 
 class JsonMemory(Memory):

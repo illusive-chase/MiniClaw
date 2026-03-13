@@ -3,10 +3,11 @@
 import json
 import logging
 
-from channels.base import Channel, ChannelMessage, SendMessage
-from memory.base import Memory
-from providers.base import ChatMessage, Provider
-from tools import ToolRegistry
+from miniclaw.channels.base import Channel, ChannelMessage, SendMessage
+from miniclaw.memory.base import Memory
+from miniclaw.providers.base import ChatMessage, Provider
+from miniclaw.session import SessionManager
+from miniclaw.tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class Agent:
         max_tool_iterations: int = 15,
         model: str | None = None,
         temperature: float = 0.7,
+        session_manager: SessionManager | None = None,
     ):
         self._provider = provider
         self._tools = tool_registry
@@ -32,6 +34,54 @@ class Agent:
         self._model = model
         self._temperature = temperature
         self._conversations: dict[str, list[ChatMessage]] = {}
+        self._session_manager = session_manager
+        self._command_handlers: dict[str, dict] = {
+            "model": {
+                "handler": self._cmd_model,
+                "description": "Show or change the current model",
+                "usage": "/model [model_name]",
+            },
+            "reset": {
+                "handler": self._cmd_reset,
+                "description": "Clear conversation history",
+                "usage": "/reset",
+            },
+        }
+
+    async def _cmd_model(self, args: str, sender_id: str) -> str:
+        """Show or set the active model."""
+        if not args:
+            return f"Current model: {self._model or '(default)'}"
+        old = self._model
+        self._model = args
+        return f"Model changed: {old or '(default)'} → {self._model}"
+
+    async def _cmd_reset(self, args: str, sender_id: str) -> str:
+        """Clear conversation history for the sender."""
+        removed = len(self._conversations.pop(sender_id, []))
+        return f"Conversation reset ({removed} messages cleared)."
+
+    async def handle_command(self, command: str, args: str, sender_id: str) -> str | None:
+        """Dispatch an agent-level slash command. Returns a response string."""
+        entry = self._command_handlers.get(command)
+        if entry is None:
+            return f"Unknown command: /{command}. Type /help for available commands."
+        return await entry["handler"](args, sender_id)
+
+    def command_help(self) -> list[dict]:
+        """Return descriptions of agent-level commands for /help display."""
+        return [
+            {"name": name, "description": e["description"], "usage": e["usage"]}
+            for name, e in self._command_handlers.items()
+        ]
+
+    def get_conversation(self, sender_id: str) -> list[ChatMessage]:
+        """Return the conversation history for a sender."""
+        return self._conversations.get(sender_id, [])
+
+    def set_conversation(self, sender_id: str, messages: list[ChatMessage]) -> None:
+        """Replace the conversation history for a sender."""
+        self._conversations[sender_id] = messages
 
     async def _run_tool_call_loop(
         self,
@@ -96,6 +146,10 @@ class Agent:
 
     async def process_message(self, user_text: str, sender_id: str = "default") -> str:
         """Process a single user message and return the agent's response."""
+        # Lazily create a session on first message
+        if self._session_manager and self._session_manager.current is None:
+            self._session_manager.new_session(sender_id)
+
         # Build messages
         messages = []
 
@@ -142,21 +196,42 @@ class Agent:
         """Run the agent on a channel, processing messages as they arrive."""
 
         async def on_message(msg: ChannelMessage):
-            logger.info(f"Received from {msg.sender_id}: {msg.text[:100]}")
-            try:
-                reply = await self.process_message(msg.text, sender_id=msg.sender_id)
-                await channel.send(SendMessage(
-                    text=reply,
-                    channel_id=msg.channel_id,
-                    reply_to=msg.message_id,
-                ))
-            except Exception as e:
-                logger.error(f"Error processing message: {e}", exc_info=True)
-                await channel.send(SendMessage(
-                    text=f"Sorry, an error occurred: {e}",
-                    channel_id=msg.channel_id,
-                    reply_to=msg.message_id,
-                ))
+            if msg.command:
+                logger.info(f"Command from {msg.sender_id}: /{msg.command} {msg.command_args or ''}")
+                result = await self.handle_command(msg.command, msg.command_args or "", msg.sender_id)
+                if result:
+                    await channel.send(SendMessage(
+                        text=result,
+                        channel_id=msg.channel_id,
+                        reply_to=msg.message_id,
+                    ))
+            else:
+                logger.info(f"Received from {msg.sender_id}: {msg.text[:100]}")
+                try:
+                    reply = await self.process_message(msg.text, sender_id=msg.sender_id)
+                    await channel.send(SendMessage(
+                        text=reply,
+                        channel_id=msg.channel_id,
+                        reply_to=msg.message_id,
+                    ))
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}", exc_info=True)
+                    await channel.send(SendMessage(
+                        text=f"Sorry, an error occurred: {e}",
+                        channel_id=msg.channel_id,
+                        reply_to=msg.message_id,
+                    ))
 
         logger.info("Agent starting on channel...")
-        await channel.listen(on_message)
+        try:
+            await channel.listen(on_message)
+        finally:
+            self._dump_session_on_exit()
+
+    def _dump_session_on_exit(self) -> None:
+        """Persist the current session's conversation to disk."""
+        if self._session_manager is None or self._session_manager.current is None:
+            return
+        sender = self._session_manager.current.sender_id
+        messages = self._conversations.get(sender, [])
+        self._session_manager.dump_current(messages)

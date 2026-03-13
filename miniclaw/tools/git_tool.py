@@ -1,7 +1,8 @@
 """Git operations tool for self-backup and version control."""
 
 import asyncio
-from tools.base import Tool, ToolResult
+
+from .base import Tool, ToolResult
 
 
 class GitTool(Tool):

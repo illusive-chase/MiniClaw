@@ -13,6 +13,8 @@ class ChannelMessage:
     sender_id: str
     channel_id: str = ""
     message_id: str = ""
+    command: str | None = None
+    command_args: str | None = None
 
 
 @dataclass

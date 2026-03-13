@@ -1,8 +1,8 @@
 """Provider factory."""
 
-from providers.anthropic_provider import AnthropicProvider
-from providers.base import Provider
-from providers.openai_provider import OpenAIProvider
+from .anthropic_provider import AnthropicProvider
+from .base import Provider
+from .openai_provider import OpenAIProvider
 
 
 def create_provider(config: dict) -> Provider:

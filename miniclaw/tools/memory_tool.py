@@ -1,7 +1,8 @@
 """Memory tool — store, recall, and forget information."""
 
-from tools.base import Tool, ToolResult
-from memory.base import Memory
+from miniclaw.memory.base import Memory
+
+from .base import Tool, ToolResult
 
 
 class MemoryTool(Tool):

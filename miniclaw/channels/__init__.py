@@ -1,7 +1,7 @@
 """Channel factory."""
 
-from channels.base import Channel
-from channels.cli import CLIChannel
+from .base import Channel
+from .cli import CLIChannel
 
 
 def create_channel(config: dict) -> Channel:

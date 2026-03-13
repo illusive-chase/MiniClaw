@@ -1,9 +1,10 @@
 """OpenAI-compatible provider (works with OpenAI, Ollama, vLLM, Azure)."""
 
 import json
+
 from openai import AsyncOpenAI
 
-from providers.base import Provider, ChatMessage, ChatResponse, ToolCall
+from .base import ChatMessage, ChatResponse, Provider, ToolCall
 
 
 class OpenAIProvider(Provider):

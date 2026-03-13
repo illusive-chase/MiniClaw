@@ -3,9 +3,9 @@
 import asyncio
 import json
 import logging
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
-from channels.base import Channel, ChannelMessage, SendMessage
+from .base import Channel, ChannelMessage, SendMessage
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,6 @@ class FeishuChannel(Channel):
 
     def _create_event_handler(self, callback: Callable[[ChannelMessage], Awaitable[None]]):
         import lark_oapi as lark
-        from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
         handler = lark.EventDispatcherHandler.builder("", self._verification_token) \
             .register_p2_im_message_receive_v1(self._make_message_handler(callback)) \
@@ -102,7 +101,6 @@ class FeishuChannel(Channel):
         await loop.run_in_executor(None, ws_client.start)
 
     async def send(self, message: SendMessage) -> None:
-        import lark_oapi as lark
         from lark_oapi.api.im.v1 import (
             CreateMessageRequest,
             CreateMessageRequestBody,

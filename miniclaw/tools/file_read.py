@@ -1,7 +1,8 @@
 """File read tool."""
 
 from pathlib import Path
-from tools.base import Tool, ToolResult
+
+from .base import Tool, ToolResult
 
 
 class FileReadTool(Tool):

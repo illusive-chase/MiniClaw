@@ -19,7 +19,11 @@ agent:
     When modifying your own source files, always create a git commit
     before and after the change.
   max_tool_iterations: 15
-  workspace_dir: "."
+  workspace_dir: ".workspace"
 
 memory:
   path: "memory.json"
+
+logging:
+  console_level: "info"
+  file_level: "warning"

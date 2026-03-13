@@ -2,7 +2,7 @@
 
 from anthropic import AsyncAnthropic
 
-from providers.base import ChatMessage, ChatResponse, Provider, ToolCall
+from .base import ChatMessage, ChatResponse, Provider, ToolCall
 
 
 class AnthropicProvider(Provider):

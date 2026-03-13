@@ -1,7 +1,8 @@
 """File edit tool — string-replace based editing."""
 
 from pathlib import Path
-from tools.base import Tool, ToolResult
+
+from .base import Tool, ToolResult
 
 
 class FileEditTool(Tool):

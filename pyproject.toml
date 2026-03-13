@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "miniclaw"
+version = "0.1.0"
+description = "Minimal Python agent runtime connecting LLM providers to messaging channels"
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=1.0",
+    "anthropic>=0.18",
+    "lark-oapi>=1.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+miniclaw = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+packages = ["miniclaw", "miniclaw.channels", "miniclaw.memory", "miniclaw.providers", "miniclaw.tools"]

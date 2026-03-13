@@ -1,7 +1,7 @@
 """Memory factory."""
 
-from memory.base import Memory
-from memory.json_memory import JsonMemory
+from .base import Memory
+from .json_memory import JsonMemory
 
 
 def create_memory(config: dict) -> Memory:

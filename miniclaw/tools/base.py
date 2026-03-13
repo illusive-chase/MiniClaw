@@ -1,6 +1,5 @@
 """Tool ABC and data classes for tool execution."""
 
-import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 

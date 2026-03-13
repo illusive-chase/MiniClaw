@@ -5,7 +5,7 @@ import inspect
 import logging
 from pathlib import Path
 
-from tools.base import Tool
+from .base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def discover_tools(tools_dir: Path) -> list[Tool]:
     for py_file in sorted(tools_dir.glob("*.py")):
         if py_file.name.startswith("_") or py_file.name == "base.py":
             continue
-        module_name = f"tools.{py_file.stem}"
+        module_name = f"miniclaw.tools.{py_file.stem}"
         try:
             module = importlib.import_module(module_name)
             for _, obj in inspect.getmembers(module, inspect.isclass):
