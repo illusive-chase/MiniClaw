@@ -10,6 +10,7 @@ channel:
   app_id: "${FEISHU_APP_ID}"
   app_secret: "${FEISHU_APP_SECRET}"
   verification_token: ""
+  render_markdown: true
 
 agent:
   system_prompt: >

@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
         "app_id": "",
         "app_secret": "",
         "verification_token": "",
+        "render_markdown": True,
     },
     "agent": {
         "system_prompt": (

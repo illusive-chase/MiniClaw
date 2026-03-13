@@ -2,9 +2,12 @@
 
 import importlib
 import inspect
+import logging
 from pathlib import Path
 
 from tools.base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRegistry:
@@ -39,7 +42,7 @@ def discover_tools(tools_dir: Path) -> list[Tool]:
                 if issubclass(obj, Tool) and obj is not Tool:
                     discovered.append(obj)
         except Exception as e:
-            print(f"Warning: failed to import {module_name}: {e}")
+            logger.warning("Failed to import %s: %s", module_name, e)
     return discovered
 
 
@@ -64,6 +67,6 @@ def create_registry(config: dict, memory=None) -> ToolRegistry:
                 tool = cls()
             registry.register(tool)
         except Exception as e:
-            print(f"Warning: failed to instantiate {cls.__name__}: {e}")
+            logger.warning("Failed to instantiate %s: %s", cls.__name__, e)
 
     return registry

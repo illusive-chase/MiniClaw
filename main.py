@@ -15,6 +15,7 @@ from config import load_config
 from memory import create_memory
 from providers import create_provider
 from tools import create_registry
+from ui import setup_rich_logging
 
 
 def main():
@@ -49,10 +50,7 @@ def main():
 
     # Setup logging
     log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
+    setup_rich_logging(log_level)
 
     # Load config
     config = load_config(args.config)

@@ -16,4 +16,4 @@ def create_channel(config: dict) -> Channel:
             verification_token=config.get("verification_token", ""),
         )
     else:
-        return CLIChannel()
+        return CLIChannel(config)

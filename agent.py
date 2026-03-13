@@ -1,13 +1,12 @@
 """Core agent loop — orchestrates provider, tools, memory, and channels."""
 
-import asyncio
 import json
 import logging
 
-from providers.base import Provider, ChatMessage, ChatResponse, ToolCall
 from channels.base import Channel, ChannelMessage, SendMessage
-from tools import ToolRegistry
 from memory.base import Memory
+from providers.base import ChatMessage, Provider
+from tools import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
