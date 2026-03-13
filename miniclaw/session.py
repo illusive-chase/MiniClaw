@@ -23,43 +23,40 @@ class Session:
 
 
 class SessionManager:
-    """Manages session persistence under ``$workspace/.sessions/``."""
+    """Manages session persistence under ``$workspace/.sessions/``.
+
+    Pure persistence layer — no concept of "current" session.
+    """
 
     def __init__(self, workspace_dir: str):
         self._sessions_dir = Path(workspace_dir) / ".sessions"
         self._cache_dir = Path(workspace_dir) / ".cache"
         self._sessions_dir.mkdir(parents=True, exist_ok=True)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        self._current: Session | None = None
-
-    @property
-    def current(self) -> Session | None:
-        return self._current
 
     # ---- lifecycle ----------------------------------------------------------
 
-    def new_session(self, sender_id: str) -> Session:
-        """Create a fresh session and set it as current."""
+    def create_session(self, sender_id: str) -> Session:
+        """Create a fresh session and return it."""
         ts = datetime.now(timezone.utc)
         token = sha256(os.urandom(16)).hexdigest()[:6]
         session_id = ts.strftime("%Y%m%d_%H%M%S") + "_" + token
-        self._current = Session(
+        return Session(
             id=session_id,
             sender_id=sender_id,
             created_at=ts.isoformat(),
             updated_at=ts.isoformat(),
         )
-        return self._current
 
-    def dump_current(self, messages: list[ChatMessage]) -> None:
-        """Persist the current session to disk (no-op if empty)."""
-        if self._current is None or not messages:
+    def save(self, session: Session, messages: list[ChatMessage]) -> None:
+        """Persist a session and its messages to disk (no-op if empty)."""
+        if not messages:
             return
-        self._current.messages = self.serialize_messages(messages)
-        self._current.updated_at = datetime.now(timezone.utc).isoformat()
-        path = self._sessions_dir / f"{self._current.id}.json"
+        session.messages = self.serialize_messages(messages)
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        path = self._sessions_dir / f"{session.id}.json"
         with open(path, "w") as f:
-            json.dump(asdict(self._current), f, indent=2, ensure_ascii=False)
+            json.dump(asdict(session), f, indent=2, ensure_ascii=False)
 
     def load_session(self, session_id: str) -> Session:
         """Load a session from disk by exact ID."""
@@ -106,12 +103,6 @@ class SessionManager:
                 f"Ambiguous prefix '{prefix}', matches:\n" + "\n".join(labels)
             )
         return matches[0]
-
-    def rename_current(self, new_name: str) -> None:
-        """Give the current session a human-friendly name."""
-        if self._current is None:
-            raise ValueError("No active session to rename")
-        self._current.name = new_name
 
     # ---- serialization helpers ---------------------------------------------
 

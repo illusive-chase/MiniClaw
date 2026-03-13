@@ -7,6 +7,7 @@ import logging
 from miniclaw.agent import Agent
 from miniclaw.channels import create_channel
 from miniclaw.config import load_config
+from miniclaw.gateway import Gateway
 from miniclaw.memory import create_memory
 from miniclaw.providers import create_provider
 from miniclaw.session import SessionManager
@@ -97,7 +98,6 @@ def main():
     memory = create_memory(config["memory"])
     tool_registry = create_registry(config, memory=memory)
     channel = create_channel(config["channel"])
-
     session_manager = SessionManager(workspace_dir)
 
     agent = Agent(
@@ -106,27 +106,23 @@ def main():
         memory=memory,
         system_prompt=config["agent"]["system_prompt"],
         max_tool_iterations=config["agent"]["max_tool_iterations"],
-        model=config["provider"].get("model"),
+        default_model=config["provider"].get("model"),
         temperature=config["provider"].get("temperature", 0.7),
-        session_manager=session_manager,
     )
 
-    # Wire channel to logging handles and agent commands
+    gateway = Gateway(agent=agent, session_manager=session_manager)
+    gateway.register_channel(channel)
+
+    # Wire channel-specific bindings
     if hasattr(channel, "bind_logging_handles"):
         channel.bind_logging_handles(logging_handles)
-    if hasattr(channel, "register_agent_commands"):
-        channel.register_agent_commands(agent.command_help())
-    if hasattr(channel, "bind_session_manager"):
-        channel.bind_session_manager(session_manager)
-    if hasattr(channel, "bind_agent"):
-        channel.bind_agent(agent)
 
     logging.getLogger(__name__).info(
         f"Starting MiniClaw: provider={config['provider']['type']}, "
         f"channel={config['channel']['type']}, "
         f"tools={tool_registry.list_names()}")
 
-    asyncio.run(agent.run_channel(channel))
+    asyncio.run(gateway.run())
 
 
 if __name__ == "__main__":

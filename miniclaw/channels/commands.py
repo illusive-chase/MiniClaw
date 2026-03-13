@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from miniclaw.ui import console
@@ -16,11 +16,10 @@ logger = logging.getLogger(__name__)
 class CommandContext:
     """Runtime context passed to every command's execute()."""
 
-    channel: Any  # CLIChannel reference
-    logging_handles: Any  # LoggingHandles from ui.py (may be None)
-    agent_commands: list[dict] = field(default_factory=list)  # [{name, description, usage}]
-    session_manager: Any = None  # SessionManager (may be None)
-    agent: Any = None  # Agent (may be None)
+    channel: Any  # Channel reference
+    gateway: Any  # Gateway reference
+    session_id: str  # Current session ID
+    logging_handles: Any = None  # LoggingHandles from ui.py (may be None)
 
 
 class Command(ABC):
@@ -104,15 +103,10 @@ class HelpCommand(Command):
         return "List available commands"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        lines = ["[bold]Channel commands:[/]"]
-        for cmd in ctx.channel._registry.all_commands():
-            lines.append(f"  {cmd.usage():30s} {cmd.description()}")
-        if ctx.agent_commands:
-            lines.append("")
-            lines.append("[bold]Agent commands:[/]")
-            for entry in ctx.agent_commands:
-                usage = entry.get("usage", f"/{entry['name']}")
-                lines.append(f"  {usage:30s} {entry['description']}")
+        lines = ["[bold]Commands:[/]"]
+        for entry in ctx.channel.command_descriptions():
+            usage = entry.get("usage", f"/{entry['name']}")
+            lines.append(f"  {usage:30s} {entry['description']}")
         return "\n".join(lines)
 
 
@@ -188,6 +182,45 @@ class OutputShowLoggingCommand(Command):
         return f"Console log level set to {label}."
 
 
+class ModelCommand(Command):
+    def name(self) -> str:
+        return "model"
+
+    def description(self) -> str:
+        return "Show or change the current model"
+
+    def usage(self) -> str:
+        return "/model [model_name]"
+
+    async def execute(self, args: str, ctx: CommandContext) -> str | None:
+        if not args:
+            session_model = await ctx.gateway.get_session_model(ctx.session_id)
+            default_model = ctx.gateway.get_default_model()
+            effective = session_model or default_model or "(default)"
+            if session_model:
+                return f"Current model: {session_model} (session override, default: {default_model or '(default)'})"
+            return f"Current model: {effective}"
+        old_model = await ctx.gateway.get_session_model(ctx.session_id)
+        old = old_model or ctx.gateway.get_default_model() or "(default)"
+        await ctx.gateway.set_session_model(ctx.session_id, args)
+        return f"Model changed: {old} → {args}"
+
+
+class ResetCommand(Command):
+    def name(self) -> str:
+        return "reset"
+
+    def description(self) -> str:
+        return "Clear conversation history"
+
+    def usage(self) -> str:
+        return "/reset"
+
+    async def execute(self, args: str, ctx: CommandContext) -> str | None:
+        removed = await ctx.gateway.clear_conversation(ctx.session_id)
+        return f"Conversation reset ({removed} messages cleared)."
+
+
 class SessionsCommand(Command):
     def name(self) -> str:
         return "sessions"
@@ -196,16 +229,12 @@ class SessionsCommand(Command):
         return "List saved sessions"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        sm = ctx.session_manager
-        if sm is None:
-            return "Session manager not available."
-        sessions = sm.list_sessions()
+        sessions = ctx.gateway.list_sessions()
         if not sessions:
             return "No saved sessions."
-        current = sm.current
         lines = ["[bold]Saved sessions:[/]"]
         for s in sessions:
-            marker = " *" if current and s.id == current.id else ""
+            marker = " *" if s.id == ctx.session_id else ""
             label = s.name or "(unnamed)"
             msg_count = len(s.messages)
             lines.append(f"  {s.id}  {label}  ({msg_count} msgs)  {s.updated_at}{marker}")
@@ -223,15 +252,9 @@ class RenameCommand(Command):
         return "/rename <name>"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        sm = ctx.session_manager
-        if sm is None:
-            return "Session manager not available."
         if not args.strip():
             return "Usage: /rename <name>"
-        try:
-            sm.rename_current(args.strip())
-        except ValueError as e:
-            return str(e)
+        await ctx.gateway.rename_session(ctx.session_id, args.strip())
         return f"Session renamed to '{args.strip()}'."
 
 
@@ -246,45 +269,26 @@ class ResumeCommand(Command):
         return "/resume <id_or_prefix>"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        sm = ctx.session_manager
-        agent = ctx.agent
-        if sm is None or agent is None:
-            return "Session manager not available."
         if not args.strip():
             return "Usage: /resume <id_or_prefix>"
 
-        # Dump current session first if it has messages
-        if sm.current is not None:
-            sender = sm.current.sender_id
-            messages = agent.get_conversation(sender)
-            sm.dump_current(messages)
-
-        # Resolve and load the target session
         try:
-            target = sm.resolve_prefix(args.strip())
+            new_id, loaded, restored = await ctx.gateway.switch_session(
+                ctx.session_id, args.strip()
+            )
         except ValueError as e:
             return str(e)
 
-        loaded = sm.load_session(target.id)
-        from miniclaw.session import SessionManager
-        restored = SessionManager.deserialize_messages(loaded.messages)
-        agent.set_conversation(loaded.sender_id, restored)
+        # Update the channel's active session
+        ctx.channel._session_id = new_id
 
-        # Set loaded session as current
-        sm._current = loaded
-        msg_count = len(restored)
-        label = loaded.name or loaded.id
-
-        # Replay conversation history so it looks like a natural session
-        from miniclaw.channels.base import SendMessage
-
+        # Replay conversation history
         for msg in restored:
-            if msg.role == "user" and msg.content:
-                console.print(f"\n[bold green]You:[/] {msg.content}")
-            elif msg.role == "assistant" and msg.content:
-                await ctx.channel.send(SendMessage(text=msg.content))
+            if msg.role in ("user", "assistant") and msg.content:
+                ctx.channel.replay_message(msg.role, msg.content)
 
-        return f"\nResumed session '{label}' ({msg_count} messages restored)."
+        label = loaded.name or loaded.id
+        return f"\nResumed session '{label}' ({len(restored)} messages restored)."
 
 
 # ---------- Factory ----------
@@ -298,6 +302,8 @@ def create_default_registry() -> CommandRegistry:
     registry.register(OutputCommand())
     registry.register(OutputMarkdownCommand())
     registry.register(OutputShowLoggingCommand())
+    registry.register(ModelCommand())
+    registry.register(ResetCommand())
     registry.register(SessionsCommand())
     registry.register(RenameCommand())
     registry.register(ResumeCommand())

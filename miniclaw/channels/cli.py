@@ -1,16 +1,24 @@
 """CLI channel for local testing via stdin/stdout."""
 
+from __future__ import annotations
+
 import asyncio
+import logging
 import sys
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING
 
 from rich.markdown import Markdown
 from rich.panel import Panel
 
 from miniclaw.ui import LoggingHandles, console
 
-from .base import Channel, ChannelMessage, SendMessage
+from .base import Channel, SendMessage
 from .commands import CommandContext, create_default_registry
+
+if TYPE_CHECKING:
+    from miniclaw.gateway import Gateway
+
+logger = logging.getLogger(__name__)
 
 
 class CLIChannel(Channel):
@@ -21,27 +29,35 @@ class CLIChannel(Channel):
         self._render_markdown = config.get("render_markdown", True)
         self._registry = create_default_registry()
         self._logging_handles: LoggingHandles | None = None
-        self._agent_commands: list[dict] = []
-        self._session_manager = None
-        self._agent = None
+        self._gw: Gateway | None = None
+        self._session_id: str | None = None
 
     def bind_logging_handles(self, handles: LoggingHandles) -> None:
         """Attach logging handles so /output show-logging can adjust levels."""
         self._logging_handles = handles
 
-    def register_agent_commands(self, descriptions: list[dict]) -> None:
-        """Register agent-level command descriptions for /help display."""
-        self._agent_commands = descriptions
+    def replay_message(self, role: str, text: str) -> None:
+        """Replay a historical message during session resume."""
+        if role == "user":
+            console.print(f"\n[bold green]You:[/] {text}")
+        elif role == "assistant":
+            if self._render_markdown:
+                console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
+            else:
+                console.print(f"\nAssistant: {text}")
 
-    def bind_session_manager(self, sm) -> None:
-        """Attach a SessionManager for session commands."""
-        self._session_manager = sm
+    def command_descriptions(self) -> list[dict]:
+        """Return all command descriptions for /help."""
+        return [
+            {"name": cmd.name(), "description": cmd.description(), "usage": cmd.usage()}
+            for cmd in self._registry.all_commands()
+        ]
 
-    def bind_agent(self, agent) -> None:
-        """Attach the Agent for session commands."""
-        self._agent = agent
+    async def start(self, gateway: Gateway) -> None:
+        """Called by Gateway. Allocate session and begin listen loop."""
+        self._gw = gateway
+        self._session_id = gateway.allocate_session("cli_user")
 
-    async def listen(self, callback: Callable[[ChannelMessage], Awaitable[None]]) -> None:
         console.print(Panel("MiniClaw CLI", subtitle="type /help for commands", style="bold cyan"))
         loop = asyncio.get_event_loop()
         while True:
@@ -61,44 +77,30 @@ class CLIChannel(Channel):
                 if line.startswith("/"):
                     ctx = CommandContext(
                         channel=self,
+                        gateway=self._gw,
+                        session_id=self._session_id,
                         logging_handles=self._logging_handles,
-                        agent_commands=self._agent_commands,
-                        session_manager=self._session_manager,
-                        agent=self._agent,
                     )
                     resolved = self._registry.resolve(line[1:])
                     if resolved:
                         cmd, args = resolved
                         try:
                             result = await cmd.execute(args, ctx)
+                            # Update session_id in case a command changed it (e.g. /resume)
+                            self._session_id = ctx.channel._session_id
                             if result:
                                 console.print(result)
                         except SystemExit:
                             console.print("[dim]Goodbye![/dim]")
                             break
                     else:
-                        # Not a channel command — forward as agent command
-                        parts = line[1:].split(None, 1)
-                        command_name = parts[0] if parts else ""
-                        command_args = parts[1] if len(parts) > 1 else ""
-                        msg = ChannelMessage(
-                            text=line,
-                            sender_id="cli_user",
-                            channel_id="cli",
-                            command=command_name,
-                            command_args=command_args,
-                        )
-                        await callback(msg)
+                        console.print(f"Unknown command: {line}. Type /help for available commands.")
                     continue
 
                 # Regular message — show spinner
-                msg = ChannelMessage(
-                    text=line,
-                    sender_id="cli_user",
-                    channel_id="cli",
-                )
                 with console.status("[bold cyan]Thinking...", spinner="dots"):
-                    await callback(msg)
+                    reply = await self._gw.process_message(self._session_id, line)
+                await self.send(SendMessage(text=reply))
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]Goodbye![/dim]")
                 break

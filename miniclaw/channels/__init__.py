@@ -9,7 +9,7 @@ def create_channel(config: dict) -> Channel:
     channel_type = config.get("type", "cli")
 
     if channel_type == "feishu":
-        from channels.feishu import FeishuChannel
+        from miniclaw.channels.feishu import FeishuChannel
         return FeishuChannel(
             app_id=config.get("app_id", ""),
             app_secret=config.get("app_secret", ""),
