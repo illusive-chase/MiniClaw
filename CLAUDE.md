@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Mini-Agent: a minimal Python agent runtime that connects LLM providers to messaging channels with tool-use capabilities and persistent memory. The agent runs a tool-call loop — it sends messages to an LLM, executes any requested tool calls, feeds results back, and repeats until the LLM responds with plain text.
+MiniClaw: a minimal Python agent runtime that connects LLM providers to messaging channels with tool-use capabilities and persistent memory. The agent runs a tool-call loop — it sends messages to an LLM, executes any requested tool calls, feeds results back, and repeats until the LLM responds with plain text.
 
 ## Commands
 

@@ -1,4 +1,4 @@
-"""Mini-Agent — minimal Python agent runtime."""
+"""MiniClaw — minimal Python agent runtime."""
 
 import argparse
 import asyncio
@@ -6,7 +6,7 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure the mini-agent directory is on the Python path
+# Ensure the MiniClaw directory is on the Python path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from agent import Agent
@@ -19,7 +19,7 @@ from ui import setup_rich_logging
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mini-Agent runtime")
+    parser = argparse.ArgumentParser(description="MiniClaw runtime")
     parser.add_argument(
         "--config",
         default="config.yaml",
@@ -80,7 +80,7 @@ def main():
     )
 
     logging.getLogger(__name__).info(
-        f"Starting mini-agent: provider={config['provider']['type']}, "
+        f"Starting MiniClaw: provider={config['provider']['type']}, "
         f"channel={config['channel']['type']}, "
         f"tools={tool_registry.list_names()}")
 

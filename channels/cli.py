@@ -19,7 +19,7 @@ class CLIChannel(Channel):
         self._render_markdown = config.get("render_markdown", True)
 
     async def listen(self, callback: Callable[[ChannelMessage], Awaitable[None]]) -> None:
-        console.print(Panel("Mini-Agent CLI", subtitle="type 'quit' to exit", style="bold cyan"))
+        console.print(Panel("MiniClaw CLI", subtitle="type 'quit' to exit", style="bold cyan"))
         loop = asyncio.get_event_loop()
         while True:
             try:
