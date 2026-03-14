@@ -77,7 +77,7 @@ class ActivityFooter:
             yield line
 
             for recent in snap.tool_recents:
-                detail = Text()
+                detail = Text(no_wrap=True, overflow="ellipsis")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
                     detail.append("    ● ", style="bold yellow")
                 elif recent.status == ActivityStatus.FINISH:
@@ -87,8 +87,7 @@ class ActivityFooter:
 
                 summary = recent.summary
                 if summary:
-                    label = summary if len(summary) <= 50 else summary[:47] + "..."
-                    detail.append(f"{recent.name}(\"{label}\")", style="italic")
+                    detail.append(f"{recent.name}(\"{recent.summary}\")", style="italic")
                 else:
                     detail.append(recent.name, style="italic")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
@@ -107,7 +106,7 @@ class ActivityFooter:
             yield line
 
             for recent in snap.agent_recents:
-                detail = Text()
+                detail = Text(no_wrap=True, overflow="ellipsis")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
                     detail.append("    ● ", style="bold yellow")
                 elif recent.status == ActivityStatus.FINISH:
@@ -117,8 +116,7 @@ class ActivityFooter:
 
                 summary = recent.summary
                 if summary:
-                    label = summary if len(summary) <= 50 else summary[:47] + "..."
-                    detail.append(f"{recent.name}(\"{label}\")", style="italic")
+                    detail.append(f"{recent.name}(\"{recent.summary}\")", style="italic")
                 else:
                     detail.append(recent.name, style="italic")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):

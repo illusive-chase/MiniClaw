@@ -439,9 +439,12 @@ class CCAgent:
                     raise payload
 
                 if tag == "plan_action":
-                    # PlanExecuteAction: yield to gateway (not to channel)
+                    # PlanExecuteAction: yield to gateway (not to channel).
+                    # The SDK turn was interrupted (PermissionResultDeny with
+                    # interrupt=True), so break — remaining messages will be
+                    # the interrupt error which we should ignore.
                     yield payload
-                    continue
+                    break
 
                 if tag == "interaction":
                     # Yield InteractionRequest to the channel for user interaction.
@@ -498,10 +501,11 @@ class CCAgent:
                             reply_parts.append(text)
                             yield text
                         elif isinstance(block, ToolUseBlock):
-                            short_desc = str(block.input)
+                            short_desc = [v for v in block.input.values() if isinstance(v, str)]
+                            short_desc = short_desc[0] or ''
                             if len(short_desc) > 40:
                                 short_desc = short_desc[:40] + "..."
-                            logger.info("Tool call: %s[id=%s](%s)", block.name, block.id, short_desc)
+                            logger.info("Tool call: %s(%s)", block.name, short_desc)
                             logger.debug("Tool args: %s[id=%s](%s)", block.name, block.id, block.input)
                             # Emit tool START event and track as pending
                             event = ActivityEvent(
@@ -519,7 +523,7 @@ class CCAgent:
                 elif isinstance(message, UserMessage) and isinstance(message.content, list):
                     for block in message.content:
                         if isinstance(block, ToolResultBlock):
-                            logger.info("Tool call: %s (id=%s)", "succeeded" if not block.is_error else "failed", block.tool_use_id)
+                            logger.debug("Tool call: %s (id=%s)", "succeeded" if not block.is_error else "failed", block.tool_use_id)
                             pending = pending_tools.pop(block.tool_use_id, None)
                             if pending is None:
                                 logger.warning("Tool result for unknown call: %s", block.tool_use_id)
