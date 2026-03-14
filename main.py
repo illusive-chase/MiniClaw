@@ -12,8 +12,8 @@ from miniclaw.log import adjust_root_level, setup_file_logging
 from miniclaw.memory import create_memory
 from miniclaw.providers import create_provider
 from miniclaw.session import SessionManager
+from miniclaw.subagent import ExecutionTracker, SubagentExecutor
 from miniclaw.tools import create_registry
-from miniclaw.tools._subagent import SubagentTool
 
 _LOG_LEVEL_MAP = {
     "debug": logging.DEBUG,
@@ -62,6 +62,11 @@ def main():
         default=None,
         help="Comma-separated tool names to exclude (merged with config)",
     )
+    parser.add_argument(
+        "--allow-tools",
+        default=None,
+        help="Comma-separated tool names to allow (merged with config)",
+    )
     args = parser.parse_args()
 
     # Load config
@@ -99,6 +104,10 @@ def main():
         cli_deny = [t.strip() for t in args.deny_tools.split(",") if t.strip()]
         existing = config["agent"].get("tool_deny_list", [])
         config["agent"]["tool_deny_list"] = list(set(existing + cli_deny))
+    if args.allow_tools:
+        cli_allow = [t.strip() for t in args.allow_tools.split(",") if t.strip()]
+        existing = config["agent"].get("tool_deny_list", [])
+        config["agent"]["tool_deny_list"] = list(set(existing) - set(cli_allow))
 
     # Inject console_level into channel config for CLIChannel to read
     config["channel"]["console_level"] = console_level
@@ -108,19 +117,20 @@ def main():
     memory = create_memory(config["memory"])
     tool_registry = create_registry(config, memory=memory)
 
-    # Register subagent tool (manually, since _subagent.py is skipped by auto-discovery)
+    # Build subagent components (if not denied)
     deny_set = set(config["agent"].get("tool_deny_list", []))
+    subagent_executor = None
+    execution_tracker = None
     if "subagent" not in deny_set:
-        subagent_tool = SubagentTool(
+        execution_tracker = ExecutionTracker()
+        subagent_executor = SubagentExecutor(
             provider=provider,
             tool_registry=tool_registry,
             memory=memory,
-            system_prompt=config["agent"]["system_prompt"],
-            max_tool_iterations=config["agent"]["max_tool_iterations"],
             default_model=config["provider"].get("model"),
             temperature=config["provider"].get("temperature", 0.7),
+            max_iterations=config["agent"].get("subagent_max_iterations", 8),
         )
-        tool_registry.register(subagent_tool)
 
     channel = create_channel(config["channel"])
     session_manager = SessionManager(workspace_dir)
@@ -139,6 +149,8 @@ def main():
         max_tool_iterations=config["agent"]["max_tool_iterations"],
         default_model=config["provider"].get("model"),
         temperature=config["provider"].get("temperature", 0.7),
+        subagent_executor=subagent_executor,
+        execution_tracker=execution_tracker,
     )
 
     gateway = Gateway(agent=agent, session_manager=session_manager)

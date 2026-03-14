@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
             "before and after the change."
         ),
         "max_tool_iterations": 15,
+        "subagent_max_iterations": 8,
         "workspace_dir": ".",
         "tool_deny_list": ['file_edit', 'file_read', 'file_write', 'shell'],
     },

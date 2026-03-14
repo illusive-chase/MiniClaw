@@ -1,11 +1,18 @@
 """Core agent loop — pure LLM engine with provider, tools, and memory."""
 
+from __future__ import annotations
+
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from miniclaw.memory.base import Memory
 from miniclaw.providers.base import ChatMessage, Provider
 from miniclaw.tools import ToolRegistry
+
+if TYPE_CHECKING:
+    from miniclaw.subagent.executor import SubagentExecutor
+    from miniclaw.subagent.tracker import ExecutionTracker
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,8 @@ class Agent:
         max_tool_iterations: int = 15,
         default_model: str | None = None,
         temperature: float = 0.7,
+        subagent_executor: SubagentExecutor | None = None,
+        execution_tracker: ExecutionTracker | None = None,
     ):
         self._provider = provider
         self._tools = tool_registry
@@ -33,6 +42,8 @@ class Agent:
         self._max_tool_iterations = max_tool_iterations
         self._default_model = default_model
         self._temperature = temperature
+        self._subagent_executor = subagent_executor
+        self._execution_tracker = execution_tracker
 
     async def _run_tool_call_loop(
         self,
@@ -63,16 +74,27 @@ class Agent:
             # Execute each tool call
             for tc in response.tool_calls:
                 logger.info(f"Tool call: {tc.name}({json.dumps(tc.arguments, ensure_ascii=False)[:200]})")
-                tool = self._tools.get(tc.name)
-                if tool is None:
-                    result_text = f"Error: unknown tool '{tc.name}'"
-                    logger.warning(result_text)
-                else:
-                    result = await tool.execute(tc.arguments)
-                    result_text = result.output
-                    if not result.success:
-                        result_text = f"[FAILED] {result_text}"
+
+                # Built-in dispatch (subagent/threads) before ToolRegistry
+                if tc.name == "subagent" and self._subagent_executor is not None:
+                    result_text = await self._subagent_executor.run(
+                        tc.arguments, self._execution_tracker
+                    )
                     logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                elif tc.name == "threads" and self._execution_tracker is not None:
+                    result_text = self._execution_tracker.summary()
+                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                else:
+                    tool = self._tools.get(tc.name)
+                    if tool is None:
+                        result_text = f"Error: unknown tool '{tc.name}'"
+                        logger.warning(result_text)
+                    else:
+                        result = await tool.execute(tc.arguments)
+                        result_text = result.output
+                        if not result.success:
+                            result_text = f"[FAILED] {result_text}"
+                        logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
 
                 messages.append(ChatMessage(
                     role="tool",
@@ -116,6 +138,8 @@ class Agent:
 
         # Add available tool names to system prompt
         tool_names = self._tools.list_names()
+        if self._subagent_executor is not None:
+            tool_names = tool_names + ["subagent", "threads"]
         if tool_names:
             system_parts.append(f"Available tools: {', '.join(tool_names)}")
 
@@ -136,15 +160,20 @@ class Agent:
 
         # Get tool specs
         tool_specs = self._tools.all_specs()
+        if self._subagent_executor is not None:
+            tool_specs = tool_specs + [
+                self._subagent_executor.subagent_spec(),
+                self._subagent_executor.threads_spec(),
+            ]
 
-        # Run the loop
+        # Run the loop (mutates messages in place with tool-call intermediates)
+        pre_loop_len = len(messages)
         reply = await self._run_tool_call_loop(messages, tool_specs, model=model)
 
-        # Update history (keep last 20 messages to avoid unbounded growth)
+        # Build updated history: prior + user + tool-call intermediates + final reply
         updated_history = list(history)
         updated_history.append(user_msg)
+        updated_history.extend(messages[pre_loop_len:])  # assistant+tool_calls, tool results
         updated_history.append(ChatMessage(role="assistant", content=reply))
-        if len(updated_history) > 20:
-            updated_history = updated_history[-20:]
 
         return reply, updated_history
