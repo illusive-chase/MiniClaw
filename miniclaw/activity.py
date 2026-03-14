@@ -81,9 +81,9 @@ class ActivityTracker:
         if event.status in (ActivityStatus.FINISH, ActivityStatus.FAILED):
             event.finished = time.monotonic()
         if event.kind == ActivityKind.TOOL:
-            self._active_tools[event.id] = event
+            self._active_tools[event.id].status = event.status
         elif event.kind == ActivityKind.AGENT:
-            self._active_agents[event.id] = event
+            self._active_agents[event.id].status = event.status
 
     def snapshot(self, n: int = 5) -> ActivitySnapshot:
         if not self._active_tools and not self._active_agents:

@@ -83,7 +83,7 @@ class ActivityFooter:
                     detail.append("    ● ", style="bold yellow")
                 elif recent.status == ActivityStatus.FINISH:
                     detail.append("    ✓ ", style="green")
-                elif recent.status == ActivityStatus.FAIL:
+                elif recent.status == ActivityStatus.FAILED:
                     detail.append("    ✗ ", style="bold red")
 
                 summary = recent.summary
