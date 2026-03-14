@@ -50,6 +50,7 @@ def create_registry(config: dict, memory=None) -> ToolRegistry:
     """Create a tool registry with built-in tools and auto-discovered tools."""
     registry = ToolRegistry()
     workspace_dir = config.get("agent", {}).get("workspace_dir", ".")
+    deny_set = set(config.get("agent", {}).get("tool_deny_list", []))
 
     # Auto-discover tool classes
     tools_dir = Path(__file__).parent
@@ -65,6 +66,9 @@ def create_registry(config: dict, memory=None) -> ToolRegistry:
                 tool = cls(workspace_dir=workspace_dir)
             else:
                 tool = cls()
+            if tool.name() in deny_set:
+                logger.info("Tool '%s' excluded by deny list", tool.name())
+                continue
             registry.register(tool)
         except Exception as e:
             logger.warning("Failed to instantiate %s: %s", cls.__name__, e)
