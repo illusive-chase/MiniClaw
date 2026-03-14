@@ -77,6 +77,8 @@ DEFAULT_CONFIG = {
             "WebFetch",
             "AskUserQuestion",
             "Agent",
+            "EnterPlanMode",
+            "ExitPlanMode",
         ],
         "max_turns": None,
         "cwd": None,

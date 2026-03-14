@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from typing import Any
+from uuid import uuid4
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -13,12 +16,16 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     CLIConnectionError,
     CLINotFoundError,
+    PermissionResultAllow,
+    PermissionResultDeny,
     ResultMessage,
     SystemMessage,
     TextBlock,
+    ToolPermissionContext,
     ToolUseBlock,
 )
 
+from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
 from miniclaw.providers.base import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -62,6 +69,8 @@ class CCAgent:
         self._max_turns = max_turns
         self._last_history: list[ChatMessage] | None = None
         self._clients: dict[str, _ClientEntry] = {}
+        # Per-client output queues for interaction routing
+        self._output_queues: dict[str, asyncio.Queue] = {}
 
     # --- SDK session mapping via history marker ---
 
@@ -83,16 +92,79 @@ class CCAgent:
         filtered = [m for m in history if not (m.role == "system" and m.content and m.content.startswith(_SESSION_MARKER))]
         return [marker] + filtered
 
+    # --- can_use_tool callback ---
+
+    def _make_can_use_tool(self, client_key: str):
+        """Create a can_use_tool callback bound to a specific client key."""
+
+        async def callback(
+            tool_name: str,
+            tool_input: dict[str, Any],
+            context: ToolPermissionContext,
+        ) -> PermissionResultAllow | PermissionResultDeny:
+            queue = self._output_queues.get(client_key)
+            if queue is None:
+                # No active stream — auto-allow (e.g., non-streaming process_message)
+                return PermissionResultAllow()
+
+            # Classify interaction type by tool name
+            if tool_name == "AskUserQuestion":
+                itype = InteractionType.ASK_USER
+            elif tool_name == "ExitPlanMode":
+                itype = InteractionType.PLAN_APPROVAL
+            else:
+                itype = InteractionType.PERMISSION
+
+            # Create a Future that the channel will resolve
+            loop = asyncio.get_running_loop()
+            future = loop.create_future()
+
+            request = InteractionRequest(
+                id=str(uuid4()),
+                type=itype,
+                tool_name=tool_name,
+                tool_input=tool_input,
+                suggestions=list(context.suggestions) if context.suggestions else [],
+                _future=future,
+            )
+
+            # Push to output queue — the stream generator will yield this
+            await queue.put(("interaction", request))
+
+            # Block until the channel resolves the interaction
+            response: InteractionResponse = await future
+
+            if response.allow:
+                return PermissionResultAllow(
+                    updated_input=response.updated_input,
+                )
+            else:
+                return PermissionResultDeny(
+                    message=response.message,
+                )
+
+        return callback
+
+    # --- Options builder ---
+
     def _build_options(
-        self, sdk_session_id: str | None, model: str | None
+        self, sdk_session_id: str | None, model: str | None, client_key: str
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions for a new client."""
         effective_model = model or self._default_model
         opts: dict = {}
+
+        # System prompt — use Claude Code preset, optionally with appended text
+        system_prompt_config: dict[str, str] = {
+            "type": "preset",
+            "preset": "claude_code",
+        }
+        if self._system_prompt:
+            system_prompt_config["append"] = self._system_prompt
+        opts["system_prompt"] = system_prompt_config
+
         if sdk_session_id:
             opts["resume"] = sdk_session_id
-        if self._system_prompt:
-            opts["system_prompt"] = self._system_prompt
         if effective_model:
             opts["model"] = effective_model
         if self._permission_mode:
@@ -103,6 +175,10 @@ class CCAgent:
             opts["cwd"] = self._cwd
         if self._max_turns is not None:
             opts["max_turns"] = self._max_turns
+
+        # Attach the interaction callback
+        opts["can_use_tool"] = self._make_can_use_tool(client_key)
+
         return ClaudeAgentOptions(**opts)
 
     # --- Client pool management ---
@@ -136,7 +212,7 @@ class CCAgent:
         sdk_session_id = self._extract_sdk_session_id(history)
         logger.debug("SDK session extracted from history: %s", sdk_session_id)
 
-        options = self._build_options(sdk_session_id, model)
+        options = self._build_options(sdk_session_id, model, client_key=key)
         logger.debug("ClaudeAgentOptions: %s", options)
         logger.info(
             "Creating ClaudeSDKClient (session=%s, resume=%s, model=%s)",
@@ -178,9 +254,9 @@ class CCAgent:
         """Process a message. Returns (reply, updated_history).
 
         Same interface as Agent.process_message().
+        Note: interactions auto-allow when no output queue is active.
         """
         t0 = time.monotonic()
-        effective_model = model or self._default_model
         logger.debug("Message processing started (session=%s)", session_id)
 
         client = await self._get_or_create_client(session_id, history, model)
@@ -222,7 +298,6 @@ class CCAgent:
             error_msg = f"Claude Agent SDK error: {exc}"
             logger.error(error_msg)
             reply_parts = [error_msg]
-            # Connection is broken, remove the client
             await self._close_client(session_id or "_default")
         except Exception as exc:
             error_msg = f"Unexpected error: {exc}"
@@ -232,7 +307,7 @@ class CCAgent:
 
         reply = "".join(reply_parts) if reply_parts else "(no response)"
 
-        # Build updated history: session marker + prior user/assistant msgs + new exchange
+        # Build updated history
         visible_history = [m for m in history if not (m.role == "system" and m.content and m.content.startswith(_SESSION_MARKER))]
         updated_history = list(visible_history)
         updated_history.append(ChatMessage(role="user", content=user_text))
@@ -249,10 +324,16 @@ class CCAgent:
         history: list[ChatMessage],
         model: str | None = None,
         session_id: str | None = None,
-    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]]]:
-        """Stream a response. Yields str chunks, then a final (reply, history) tuple."""
+    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]] | InteractionRequest]:
+        """Stream a response.
+
+        Yields:
+            str — text chunks for progressive display
+            InteractionRequest — permission/question/plan-approval requests
+            tuple[str, list[ChatMessage]] — final sentinel with reply and history
+        """
         t0 = time.monotonic()
-        effective_model = model or self._default_model
+        key = session_id or "_default"
         logger.debug("Message stream processing started (session=%s)", session_id)
 
         client = await self._get_or_create_client(session_id, history, model)
@@ -260,10 +341,42 @@ class CCAgent:
         reply_parts: list[str] = []
         new_session_id: str | None = self._extract_sdk_session_id(history)
 
-        try:
-            await client.query(user_text)
+        # Set up the output queue for this stream — the can_use_tool callback
+        # pushes InteractionRequests here alongside SDK messages.
+        output_queue: asyncio.Queue = asyncio.Queue()
+        self._output_queues[key] = output_queue
 
-            async for message in client.receive_response():
+        async def _run_sdk():
+            """Background task: run query + receive_response, push to queue."""
+            try:
+                await client.query(user_text)
+                async for message in client.receive_response():
+                    await output_queue.put(("sdk", message))
+                await output_queue.put(("done", None))
+            except Exception as exc:
+                await output_queue.put(("error", exc))
+
+        task = asyncio.create_task(_run_sdk())
+
+        try:
+            while True:
+                tag, payload = await output_queue.get()
+
+                if tag == "done":
+                    break
+
+                if tag == "error":
+                    raise payload
+
+                if tag == "interaction":
+                    # Yield InteractionRequest to the channel for user interaction.
+                    # The SDK is blocked (awaiting the Future) until the channel
+                    # calls request.resolve(response).
+                    yield payload
+                    continue
+
+                # tag == "sdk"
+                message = payload
                 logger.info("Received %s message", type(message).__name__)
 
                 if isinstance(message, SystemMessage):
@@ -294,13 +407,22 @@ class CCAgent:
             logger.error(error_msg)
             reply_parts = [error_msg]
             yield error_msg
-            await self._close_client(session_id or "_default")
+            await self._close_client(key)
         except Exception as exc:
             error_msg = f"Unexpected error: {exc}"
             logger.error(error_msg, exc_info=True)
             reply_parts = [error_msg]
             yield error_msg
-            await self._close_client(session_id or "_default")
+            await self._close_client(key)
+        finally:
+            self._output_queues.pop(key, None)
+            # Ensure background task completes
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         reply = "".join(reply_parts) if reply_parts else "(no response)"
 

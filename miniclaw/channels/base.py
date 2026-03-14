@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from miniclaw.interactions import InteractionRequest, InteractionResponse
+
 if TYPE_CHECKING:
     from miniclaw.gateway import Gateway
 
@@ -50,10 +52,14 @@ class Channel(ABC):
         """Replay a historical message during session resume. Default: no-op."""
         pass
 
-    async def send_stream(self, stream: AsyncIterator[str]) -> None:
+    async def send_stream(self, stream: AsyncIterator[str | InteractionRequest]) -> None:
         """Send a streamed response. Default: buffer and call send()."""
         chunks: list[str] = []
         async for chunk in stream:
+            if isinstance(chunk, InteractionRequest):
+                # Default: auto-allow all interactions
+                chunk.resolve(InteractionResponse(id=chunk.id, allow=True))
+                continue
             chunks.append(chunk)
         if chunks:
             await self.send(SendMessage(text="".join(chunks)))

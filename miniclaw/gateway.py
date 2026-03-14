@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from miniclaw.interactions import InteractionRequest
 from miniclaw.providers.base import ChatMessage
 from miniclaw.session import Session, SessionManager
 
@@ -86,8 +87,11 @@ class Gateway:
 
     async def process_message_stream(
         self, session_id: str, text: str
-    ) -> AsyncIterator[str]:
-        """Stream a response. Yields str chunks. Updates session state on completion."""
+    ) -> AsyncIterator[str | InteractionRequest]:
+        """Stream a response. Yields str chunks and InteractionRequests.
+
+        Updates session state on completion.
+        """
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             state = self._states[session_id]
@@ -98,6 +102,8 @@ class Gateway:
                 ):
                     if isinstance(item, tuple):  # sentinel: (reply, history)
                         state.history = item[1]
+                    elif isinstance(item, InteractionRequest):
+                        yield item  # channel handles interaction
                     else:
                         yield item  # str chunk
             else:
