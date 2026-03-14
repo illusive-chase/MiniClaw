@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from miniclaw.interactions import InteractionRequest
+from miniclaw.interactions import InteractionRequest, PlanExecuteAction
 from miniclaw.providers.base import ChatMessage
 from miniclaw.session import Session, SessionManager
 
@@ -91,21 +91,52 @@ class Gateway:
         """Stream a response. Yields str chunks and InteractionRequests.
 
         Updates session state on completion.
+        If the agent emits a PlanExecuteAction (clear-context plan execution),
+        the gateway resets the client, clears history, and starts a second turn
+        with the plan content as user message under the requested permission mode.
         """
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         async with lock:
             state = self._states[session_id]
             if hasattr(self._agent, "process_message_stream"):
+                pending_action: PlanExecuteAction | None = None
+
                 async for item in self._agent.process_message_stream(
                     text, list(state.history), model=state.model,
                     session_id=session_id,
                 ):
-                    if isinstance(item, tuple):  # sentinel: (reply, history)
+                    if isinstance(item, PlanExecuteAction):
+                        pending_action = item  # consume — don't yield to channel
+                    elif isinstance(item, tuple):  # sentinel: (reply, history)
                         state.history = item[1]
                     elif isinstance(item, InteractionRequest):
                         yield item  # channel handles interaction
                     else:
                         yield item  # str chunk
+
+                # --- Clear-context plan execution (Option 1) ---
+                if pending_action is not None:
+                    logger.info(
+                        "PlanExecuteAction received — clearing context and starting "
+                        "execution turn (session=%s, mode=%s)",
+                        session_id, pending_action.permission_mode,
+                    )
+                    await self._agent.reset_client(session_id)
+                    state.history = []
+
+                    async for item in self._agent.process_message_stream(
+                        pending_action.plan_content,
+                        [],
+                        model=state.model,
+                        session_id=session_id,
+                        permission_mode=pending_action.permission_mode,
+                    ):
+                        if isinstance(item, tuple):  # sentinel
+                            state.history = item[1]
+                        elif isinstance(item, InteractionRequest):
+                            yield item
+                        else:
+                            yield item
             else:
                 # Fallback for regular Agent (non-streaming)
                 reply, updated = await self._agent.process_message(

@@ -18,6 +18,7 @@ from claude_agent_sdk import (
     CLINotFoundError,
     PermissionResultAllow,
     PermissionResultDeny,
+    PermissionUpdate,
     ResultMessage,
     SystemMessage,
     TextBlock,
@@ -25,7 +26,12 @@ from claude_agent_sdk import (
     ToolUseBlock,
 )
 
-from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
+from miniclaw.interactions import (
+    InteractionRequest,
+    InteractionResponse,
+    InteractionType,
+    PlanExecuteAction,
+)
 from miniclaw.providers.base import ChatMessage
 
 logger = logging.getLogger(__name__)
@@ -134,6 +140,35 @@ class CCAgent:
             # Block until the channel resolves the interaction
             response: InteractionResponse = await future
 
+            # --- ExitPlanMode branching ---
+            if itype == InteractionType.PLAN_APPROVAL:
+                if response.clear_context:
+                    # Option 1: clear context + execute plan
+                    plan_content = response.message or "Execute the plan as discussed."
+                    action = PlanExecuteAction(
+                        plan_content=plan_content,
+                        permission_mode=response.permission_mode or "acceptEdits",
+                    )
+                    await queue.put(("plan_action", action))
+                    return PermissionResultDeny(interrupt=True)
+
+                if response.allow and response.permission_mode:
+                    # Options 2/3: approve plan and switch permission mode
+                    return PermissionResultAllow(
+                        updated_permissions=[
+                            PermissionUpdate(
+                                type="setMode",
+                                mode=response.permission_mode,
+                                destination="session",
+                            )
+                        ],
+                    )
+
+                if not response.allow:
+                    # Option 4: keep planning
+                    return PermissionResultDeny(message=response.message)
+
+            # --- Default handling for non-plan interactions ---
             if response.allow:
                 return PermissionResultAllow(
                     updated_input=response.updated_input,
@@ -148,10 +183,15 @@ class CCAgent:
     # --- Options builder ---
 
     def _build_options(
-        self, sdk_session_id: str | None, model: str | None, client_key: str
+        self,
+        sdk_session_id: str | None,
+        model: str | None,
+        client_key: str,
+        permission_mode_override: str | None = None,
     ) -> ClaudeAgentOptions:
         """Build ClaudeAgentOptions for a new client."""
         effective_model = model or self._default_model
+        effective_permission_mode = permission_mode_override or self._permission_mode
         opts: dict = {}
 
         # System prompt — use Claude Code preset, optionally with appended text
@@ -167,8 +207,8 @@ class CCAgent:
             opts["resume"] = sdk_session_id
         if effective_model:
             opts["model"] = effective_model
-        if self._permission_mode:
-            opts["permission_mode"] = self._permission_mode
+        if effective_permission_mode:
+            opts["permission_mode"] = effective_permission_mode
         if self._allowed_tools:
             opts["allowed_tools"] = self._allowed_tools
         if self._cwd:
@@ -188,14 +228,15 @@ class CCAgent:
         session_id: str | None,
         history: list[ChatMessage],
         model: str | None,
+        permission_mode_override: str | None = None,
     ) -> ClaudeSDKClient:
         """Return an existing client or create a new one for the session."""
         effective_model = model or self._default_model
         key = session_id or "_default"
 
-        # Check for existing client
+        # Check for existing client (skip reuse if permission_mode_override forces a new client)
         entry = self._clients.get(key)
-        if entry is not None:
+        if entry is not None and permission_mode_override is None:
             # If model changed, close old client and create new one
             if entry.model != effective_model:
                 logger.info(
@@ -207,12 +248,21 @@ class CCAgent:
                 logger.info("Reusing existing client (session=%s)", key)
                 logger.debug("Active clients: %d", len(self._clients))
                 return entry.client
+        elif entry is not None and permission_mode_override is not None:
+            logger.info(
+                "Permission mode override (%s), recreating client (session=%s)",
+                permission_mode_override, key,
+            )
+            await self._close_client(key)
 
         # Extract SDK session from history for cross-restart resume
         sdk_session_id = self._extract_sdk_session_id(history)
         logger.debug("SDK session extracted from history: %s", sdk_session_id)
 
-        options = self._build_options(sdk_session_id, model, client_key=key)
+        options = self._build_options(
+            sdk_session_id, model, client_key=key,
+            permission_mode_override=permission_mode_override,
+        )
         logger.debug("ClaudeAgentOptions: %s", options)
         logger.info(
             "Creating ClaudeSDKClient (session=%s, resume=%s, model=%s)",
@@ -233,6 +283,12 @@ class CCAgent:
                 await entry.client.__aexit__(None, None, None)
             except Exception as exc:
                 logger.warning("Error closing client (session=%s): %s", key, exc)
+
+    async def reset_client(self, session_id: str | None = None) -> None:
+        """Close a client by session_id, forcing a fresh client on next use."""
+        key = session_id or "_default"
+        logger.info("Resetting client (session=%s)", key)
+        await self._close_client(key)
 
     async def aclose(self) -> None:
         """Close all managed clients. Call on shutdown."""
@@ -324,7 +380,8 @@ class CCAgent:
         history: list[ChatMessage],
         model: str | None = None,
         session_id: str | None = None,
-    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]] | InteractionRequest]:
+        permission_mode: str | None = None,
+    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]] | InteractionRequest | PlanExecuteAction]:
         """Stream a response.
 
         Yields:
@@ -336,7 +393,9 @@ class CCAgent:
         key = session_id or "_default"
         logger.debug("Message stream processing started (session=%s)", session_id)
 
-        client = await self._get_or_create_client(session_id, history, model)
+        client = await self._get_or_create_client(
+            session_id, history, model, permission_mode_override=permission_mode,
+        )
 
         reply_parts: list[str] = []
         new_session_id: str | None = self._extract_sdk_session_id(history)
@@ -367,6 +426,11 @@ class CCAgent:
 
                 if tag == "error":
                     raise payload
+
+                if tag == "plan_action":
+                    # PlanExecuteAction: yield to gateway (not to channel)
+                    yield payload
+                    continue
 
                 if tag == "interaction":
                     # Yield InteractionRequest to the channel for user interaction.

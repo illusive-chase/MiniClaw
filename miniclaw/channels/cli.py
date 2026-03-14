@@ -307,7 +307,7 @@ class CLIChannel(Channel):
     async def _prompt_plan_approval(
         self, request: InteractionRequest, loop: asyncio.AbstractEventLoop
     ) -> InteractionResponse:
-        """Display a plan for review and prompt for approval."""
+        """Display a plan for review and prompt with 4 approval options."""
         tool_input = request.tool_input
 
         # Render plan content if available
@@ -328,15 +328,44 @@ class CLIChannel(Channel):
                 border_style="green",
             ))
 
-        self._console.print("[dim][1] Approve  [2] Reject[/dim]")
+        self._console.print(
+            "[dim][1] Yes, clear context and auto-accept edits\n"
+            "[2] Yes, auto-accept edits\n"
+            "[3] Yes, manually approve edits\n"
+            "[4] No, keep planning[/dim]"
+        )
         choice = await loop.run_in_executor(None, lambda: input("> ").strip())
 
-        if choice == "2":
-            reason = await loop.run_in_executor(None, lambda: input("Feedback (optional): ").strip())
+        if choice == "1":
+            # Clear context + acceptEdits: pass plan content in message for PlanExecuteAction
             return InteractionResponse(
                 id=request.id,
                 allow=False,
-                message=reason or "Plan rejected by user",
+                clear_context=True,
+                permission_mode="acceptEdits",
+                message=plan_content or "Execute the plan as discussed.",
             )
-
-        return InteractionResponse(id=request.id, allow=True)
+        elif choice == "2":
+            # Approve + acceptEdits mode
+            return InteractionResponse(
+                id=request.id,
+                allow=True,
+                permission_mode="acceptEdits",
+            )
+        elif choice == "3":
+            # Approve + default mode (manual approval for each edit)
+            return InteractionResponse(
+                id=request.id,
+                allow=True,
+                permission_mode="default",
+            )
+        else:
+            # Keep planning — prompt for feedback
+            feedback = await loop.run_in_executor(
+                None, lambda: input("Feedback (optional): ").strip()
+            )
+            return InteractionResponse(
+                id=request.id,
+                allow=False,
+                message=feedback or "Plan rejected by user",
+            )

@@ -39,3 +39,13 @@ class InteractionResponse:
     allow: bool                                # True = allow/approve, False = deny/reject
     message: str = ""                          # Denial reason, or user's text answer
     updated_input: dict[str, Any] | None = None  # Modified tool input (e.g., user's answers)
+    permission_mode: str | None = None         # Mode to switch to (e.g., "acceptEdits", "default")
+    clear_context: bool = False                # True = clear history and re-inject plan
+
+
+@dataclass
+class PlanExecuteAction:
+    """Signal to gateway: clear context and start a new turn executing the plan."""
+
+    plan_content: str   # Plan text to inject as user message in the new turn
+    permission_mode: str  # Permission mode for the execution turn (e.g., "acceptEdits")
