@@ -124,6 +124,7 @@ class Agent:
         user_text: str,
         history: list[ChatMessage],
         model: str | None = None,
+        session_id: str | None = None,
     ) -> tuple[str, list[ChatMessage]]:
         """Process a message. Returns (reply, updated_history).
 

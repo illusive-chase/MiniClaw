@@ -57,6 +57,8 @@ class Gateway:
             await asyncio.gather(*tasks)
         finally:
             self._dump_all()
+            if hasattr(self._agent, "aclose"):
+                await self._agent.aclose()
 
     # --- Session lifecycle ---
 
@@ -75,6 +77,7 @@ class Gateway:
             state = self._states[session_id]
             reply, updated = await self._agent.process_message(
                 text, list(state.history), model=state.model,
+                session_id=session_id,
             )
             state.history = updated
             return reply
@@ -90,7 +93,8 @@ class Gateway:
             state = self._states[session_id]
             if hasattr(self._agent, "process_message_stream"):
                 async for item in self._agent.process_message_stream(
-                    text, list(state.history), model=state.model
+                    text, list(state.history), model=state.model,
+                    session_id=session_id,
                 ):
                     if isinstance(item, tuple):  # sentinel: (reply, history)
                         state.history = item[1]
@@ -99,7 +103,8 @@ class Gateway:
             else:
                 # Fallback for regular Agent (non-streaming)
                 reply, updated = await self._agent.process_message(
-                    text, list(state.history), model=state.model
+                    text, list(state.history), model=state.model,
+                    session_id=session_id,
                 )
                 state.history = updated
                 yield reply

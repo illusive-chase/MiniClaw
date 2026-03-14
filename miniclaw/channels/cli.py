@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.theme import Theme
@@ -132,8 +133,20 @@ class CLIChannel(Channel):
             self._console.print(f"\nAssistant: {message.text}")
 
     async def send_stream(self, stream: AsyncIterator[str]) -> None:
-        """Stream response chunks directly to the console."""
-        self._console.print("\n[blue]Assistant:[/blue] ", end="")
-        async for chunk in stream:
-            self._console.print(chunk, end="", highlight=False)
-        self._console.print()  # final newline
+        """Stream response chunks to the console with progressive markdown."""
+        if not self._render_markdown:
+            # Plain text streaming (unchanged)
+            self._console.print("\n[blue]Assistant:[/blue] ", end="")
+            async for chunk in stream:
+                self._console.print(chunk, end="", highlight=False)
+            self._console.print()
+            return
+
+        # Progressive markdown rendering
+        buffer = ""
+        with Live(console=self._console, refresh_per_second=8) as live:
+            async for chunk in stream:
+                buffer += chunk
+                live.update(
+                    Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                )

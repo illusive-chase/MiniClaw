@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
+    ClaudeSDKClient,
     CLIConnectionError,
     CLINotFoundError,
     ResultMessage,
     SystemMessage,
     TextBlock,
     ToolUseBlock,
-    query,
 )
 
 from miniclaw.providers.base import ChatMessage
@@ -24,11 +26,23 @@ logger = logging.getLogger(__name__)
 _SESSION_MARKER = "__cc_session__:"
 
 
+@dataclass
+class _ClientEntry:
+    """Tracks a live ClaudeSDKClient and the model it was created with."""
+
+    client: ClaudeSDKClient
+    model: str | None
+
+
 class CCAgent:
     """Agent backend that delegates the agentic loop to Claude Agent SDK.
 
-    Implements the same ``process_message()`` interface as ``Agent`` so Gateway
-    can work with both interchangeably.
+    Uses a pool of persistent ``ClaudeSDKClient`` instances keyed by
+    session_id, giving us multi-turn conversation without per-message
+    process startup overhead.
+
+    Implements the same ``process_message()`` interface as ``Agent`` so
+    Gateway can work with both interchangeably.
     """
 
     def __init__(
@@ -47,6 +61,7 @@ class CCAgent:
         self._cwd = cwd or "."
         self._max_turns = max_turns
         self._last_history: list[ChatMessage] | None = None
+        self._clients: dict[str, _ClientEntry] = {}
 
     # --- SDK session mapping via history marker ---
 
@@ -71,7 +86,7 @@ class CCAgent:
     def _build_options(
         self, sdk_session_id: str | None, model: str | None
     ) -> ClaudeAgentOptions:
-        """Build ClaudeAgentOptions for a query call."""
+        """Build ClaudeAgentOptions for a new client."""
         effective_model = model or self._default_model
         opts: dict = {}
         if sdk_session_id:
@@ -90,6 +105,67 @@ class CCAgent:
             opts["max_turns"] = self._max_turns
         return ClaudeAgentOptions(**opts)
 
+    # --- Client pool management ---
+
+    async def _get_or_create_client(
+        self,
+        session_id: str | None,
+        history: list[ChatMessage],
+        model: str | None,
+    ) -> ClaudeSDKClient:
+        """Return an existing client or create a new one for the session."""
+        effective_model = model or self._default_model
+        key = session_id or "_default"
+
+        # Check for existing client
+        entry = self._clients.get(key)
+        if entry is not None:
+            # If model changed, close old client and create new one
+            if entry.model != effective_model:
+                logger.info(
+                    "Model changed (%s -> %s), recreating client (session=%s)",
+                    entry.model, effective_model, key,
+                )
+                await self._close_client(key)
+            else:
+                logger.info("Reusing existing client (session=%s)", key)
+                logger.debug("Active clients: %d", len(self._clients))
+                return entry.client
+
+        # Extract SDK session from history for cross-restart resume
+        sdk_session_id = self._extract_sdk_session_id(history)
+        logger.debug("SDK session extracted from history: %s", sdk_session_id)
+
+        options = self._build_options(sdk_session_id, model)
+        logger.debug("ClaudeAgentOptions: %s", options)
+        logger.info(
+            "Creating ClaudeSDKClient (session=%s, resume=%s, model=%s)",
+            key, sdk_session_id, effective_model,
+        )
+
+        client = ClaudeSDKClient(options=options)
+        await client.__aenter__()
+        self._clients[key] = _ClientEntry(client=client, model=effective_model)
+        logger.debug("Active clients: %d", len(self._clients))
+        return client
+
+    async def _close_client(self, key: str) -> None:
+        """Close and remove a single client by key."""
+        entry = self._clients.pop(key, None)
+        if entry is not None:
+            try:
+                await entry.client.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.warning("Error closing client (session=%s): %s", key, exc)
+
+    async def aclose(self) -> None:
+        """Close all managed clients. Call on shutdown."""
+        count = len(self._clients)
+        if count:
+            logger.info("Closing %d client(s)", count)
+        for key in list(self._clients):
+            await self._close_client(key)
+
     # --- Core interface ---
 
     async def process_message(
@@ -97,23 +173,31 @@ class CCAgent:
         user_text: str,
         history: list[ChatMessage],
         model: str | None = None,
+        session_id: str | None = None,
     ) -> tuple[str, list[ChatMessage]]:
         """Process a message. Returns (reply, updated_history).
 
         Same interface as Agent.process_message().
         """
-        sdk_session_id = self._extract_sdk_session_id(history)
-        options = self._build_options(sdk_session_id, model)
+        t0 = time.monotonic()
         effective_model = model or self._default_model
-        logger.info("Processing message (sdk_session=%s, model=%s)", sdk_session_id, effective_model)
+        logger.debug("Message processing started (session=%s)", session_id)
+
+        client = await self._get_or_create_client(session_id, history, model)
 
         reply_parts: list[str] = []
-        new_session_id: str | None = sdk_session_id
+        new_session_id: str | None = self._extract_sdk_session_id(history)
 
         try:
-            async for message in query(prompt=user_text, options=options):
-                if isinstance(message, SystemMessage) and message.subtype == "init":
-                    new_session_id = message.data.get("session_id")
+            await client.query(user_text)
+
+            async for message in client.receive_response():
+                logger.info("Received %s message", type(message).__name__)
+
+                if isinstance(message, SystemMessage):
+                    logger.debug("SystemMessage[%s]: %s", message.subtype, message.data)
+                    if message.subtype == "init":
+                        new_session_id = message.data.get("session_id")
 
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
@@ -121,24 +205,30 @@ class CCAgent:
                             text = block.text if block.text.endswith("\n") else block.text + "\n"
                             reply_parts.append(text)
                         elif isinstance(block, ToolUseBlock):
-                            logger.info("Tool use: %s", block.name)
+                            logger.info("Tool call: %s", block.name)
+                            logger.debug("Tool args: %s(%s)", block.name, block.input)
 
                 elif isinstance(message, ResultMessage):
                     if message.result:
                         reply_parts.append(message.result)
+                    elapsed = time.monotonic() - t0
+                    total_chars = sum(len(p) for p in reply_parts)
                     logger.info(
-                        "Reply (%d chars, session=%s)",
-                        sum(len(p) for p in reply_parts),
-                        new_session_id,
+                        "Completed in %.1fs — %d chars (session=%s)",
+                        elapsed, total_chars, session_id,
                     )
+
         except (CLINotFoundError, CLIConnectionError) as exc:
             error_msg = f"Claude Agent SDK error: {exc}"
             logger.error(error_msg)
             reply_parts = [error_msg]
+            # Connection is broken, remove the client
+            await self._close_client(session_id or "_default")
         except Exception as exc:
             error_msg = f"Unexpected error: {exc}"
             logger.error(error_msg, exc_info=True)
             reply_parts = [error_msg]
+            await self._close_client(session_id or "_default")
 
         reply = "".join(reply_parts) if reply_parts else "(no response)"
 
@@ -158,20 +248,28 @@ class CCAgent:
         user_text: str,
         history: list[ChatMessage],
         model: str | None = None,
+        session_id: str | None = None,
     ) -> AsyncIterator[str | tuple[str, list[ChatMessage]]]:
         """Stream a response. Yields str chunks, then a final (reply, history) tuple."""
-        sdk_session_id = self._extract_sdk_session_id(history)
-        options = self._build_options(sdk_session_id, model)
+        t0 = time.monotonic()
         effective_model = model or self._default_model
-        logger.info("Processing message stream (sdk_session=%s, model=%s)", sdk_session_id, effective_model)
+        logger.debug("Message stream processing started (session=%s)", session_id)
+
+        client = await self._get_or_create_client(session_id, history, model)
 
         reply_parts: list[str] = []
-        new_session_id: str | None = sdk_session_id
+        new_session_id: str | None = self._extract_sdk_session_id(history)
 
         try:
-            async for message in query(prompt=user_text, options=options):
-                if isinstance(message, SystemMessage) and message.subtype == "init":
-                    new_session_id = message.data.get("session_id")
+            await client.query(user_text)
+
+            async for message in client.receive_response():
+                logger.info("Received %s message", type(message).__name__)
+
+                if isinstance(message, SystemMessage):
+                    logger.debug("SystemMessage[%s]: %s", message.subtype, message.data)
+                    if message.subtype == "init":
+                        new_session_id = message.data.get("session_id")
 
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
@@ -180,15 +278,15 @@ class CCAgent:
                             reply_parts.append(text)
                             yield text
                         elif isinstance(block, ToolUseBlock):
-                            logger.info("Tool use: %s", block.name)
+                            logger.info("Tool call: %s", block.name)
+                            logger.debug("Tool args: %s(%s)", block.name, block.input)
 
                 elif isinstance(message, ResultMessage):
-                    # ResultMessage.result may contain the final assembled text.
-                    # We already yielded from AssistantMessage blocks, so just log.
+                    elapsed = time.monotonic() - t0
+                    total_chars = sum(len(p) for p in reply_parts)
                     logger.info(
-                        "Reply (%d chars, session=%s)",
-                        sum(len(p) for p in reply_parts),
-                        new_session_id,
+                        "Completed in %.1fs — %d chars (session=%s)",
+                        elapsed, total_chars, session_id,
                     )
 
         except (CLINotFoundError, CLIConnectionError) as exc:
@@ -196,11 +294,13 @@ class CCAgent:
             logger.error(error_msg)
             reply_parts = [error_msg]
             yield error_msg
+            await self._close_client(session_id or "_default")
         except Exception as exc:
             error_msg = f"Unexpected error: {exc}"
             logger.error(error_msg, exc_info=True)
             reply_parts = [error_msg]
             yield error_msg
+            await self._close_client(session_id or "_default")
 
         reply = "".join(reply_parts) if reply_parts else "(no response)"
 
