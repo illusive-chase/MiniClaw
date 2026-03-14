@@ -71,7 +71,7 @@ class ActivityTracker:
             return
         if event.status in (ActivityStatus.FINISH, ActivityStatus.FAILED):
             event.finished = time.monotonic()
-        if event.kind == ActivityKind.TOOL:
+        if event.kind == ActivityKind.TOOL and event.name not in ("ExitPlanMode", "Agent"):
             self._active_tools.setdefault(event.id, event).update(event)
         elif event.kind == ActivityKind.AGENT:
             self._active_agents.setdefault(event.id, event).update(event)

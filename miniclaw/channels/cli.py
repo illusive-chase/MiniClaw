@@ -181,6 +181,25 @@ class CLIChannel(Channel):
             for cmd in self._registry.all_commands()
         ]
 
+    def _format_status_footer(self) -> str:
+        """Return a markdown blockquote string with token usage, cost, and API duration.
+
+        Returns an empty string if no usage data is available.
+        """
+        if not self._gw or not self._session_id:
+            return ""
+        u = self._gw.get_session_usage(self._session_id)
+        if u is None:
+            return ""
+        total = u.input_tokens + u.output_tokens
+        parts = [f"tokens: {total:,} ({u.input_tokens:,}in + {u.output_tokens:,}out)"]
+        if u.total_cost_usd > 0:
+            parts.append(f"cost: ${u.total_cost_usd:.4f}")
+        if u.total_api_duration_ms > 0:
+            secs = u.total_api_duration_ms / 1000
+            parts.append(f"api: {secs:.1f}s")
+        return "\n> " + " | ".join(parts)
+
     async def start(self, gateway: Gateway) -> None:
         """Called by Gateway. Allocate session and begin listen loop."""
         self._gw = gateway
@@ -214,7 +233,8 @@ class CLIChannel(Channel):
                         try:
                             result = await cmd.execute(args, ctx)
                             # Update session_id in case a command changed it (e.g. /resume)
-                            self._session_id = ctx.channel._session_id
+                            if ctx.channel._session_id != self._session_id:
+                                self._session_id = ctx.channel._session_id
                             if result:
                                 self._console.print(result)
                         except SystemExit:
@@ -237,7 +257,8 @@ class CLIChannel(Channel):
                 break
 
     async def send(self, message: SendMessage) -> None:
-        self._console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
+        content = message.text + self._format_status_footer()
+        self._console.print(Panel(Markdown(content), title="Assistant", border_style="blue"))
 
     async def send_stream(self, stream: AsyncIterator[str | InteractionRequest | ActivityEvent]) -> None:
         """Stream response chunks to the console with progressive markdown.
@@ -278,6 +299,11 @@ class CLIChannel(Channel):
                     panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
         finally:
+            # Final render with status footer appended to the markdown content
+            status = self._format_status_footer()
+            final_content = buffer + status if buffer else status
+            if final_content:
+                live.update(Panel(Markdown(final_content), title="Assistant", border_style="blue"))
             live.stop()
 
     # --- Interaction prompts ---
