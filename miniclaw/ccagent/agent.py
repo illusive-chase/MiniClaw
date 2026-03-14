@@ -40,39 +40,11 @@ from miniclaw.interactions import (
     PlanExecuteAction,
 )
 from miniclaw.providers.base import ChatMessage
+from miniclaw.usage import UsageStats
 
 logger = logging.getLogger(__name__)
 
 _SESSION_MARKER = "__cc_session__:"
-
-
-@dataclass
-class UsageStats:
-    """Cumulative token usage and cost for a session."""
-
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
-    total_cost_usd: float = 0.0
-    total_duration_ms: int = 0
-    total_api_duration_ms: int = 0
-    num_turns: int = 0
-    num_requests: int = 0
-
-    def accumulate(self, result: ResultMessage) -> None:
-        """Accumulate stats from a ResultMessage."""
-        if result.total_cost_usd is not None:
-            self.total_cost_usd += result.total_cost_usd
-        self.total_duration_ms += result.duration_ms
-        self.total_api_duration_ms += result.duration_api_ms
-        self.num_turns += result.num_turns
-        self.num_requests += 1
-        if result.usage:
-            self.input_tokens += result.usage.get("input_tokens", 0)
-            self.output_tokens += result.usage.get("output_tokens", 0)
-            self.cache_read_tokens += result.usage.get("cache_read_input_tokens", 0)
-            self.cache_creation_tokens += result.usage.get("cache_creation_input_tokens", 0)
 
 
 @dataclass

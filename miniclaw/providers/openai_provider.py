@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
+from miniclaw.usage import TokenUsage
+
 from .base import ChatMessage, ChatResponse, Provider, ToolCall
 
 
@@ -74,9 +76,17 @@ class OpenAIProvider(Provider):
                     arguments=args,
                 ))
 
+        usage = None
+        if response.usage:
+            usage = TokenUsage(
+                input_tokens=response.usage.prompt_tokens or 0,
+                output_tokens=response.usage.completion_tokens or 0,
+            )
+
         return ChatResponse(
             text=message.content,
             tool_calls=tool_calls,
+            usage=usage,
         )
 
     async def chat_stream(
@@ -91,6 +101,7 @@ class OpenAIProvider(Provider):
             "messages": self._to_api_messages(messages),
             "temperature": temperature,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools:
             kwargs["tools"] = tools
@@ -99,9 +110,16 @@ class OpenAIProvider(Provider):
         full_text_parts: list[str] = []
         # Accumulate tool calls by index: {index: {id, name, arg_fragments}}
         pending_tools: dict[int, dict] = {}
+        usage: TokenUsage | None = None
 
         response = await self._client.chat.completions.create(**kwargs)
         async for chunk in response:
+            # The final chunk (with stream_options) has usage but empty choices
+            if chunk.usage:
+                usage = TokenUsage(
+                    input_tokens=chunk.usage.prompt_tokens or 0,
+                    output_tokens=chunk.usage.completion_tokens or 0,
+                )
             if not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -148,4 +166,5 @@ class OpenAIProvider(Provider):
         yield ChatResponse(
             text="".join(full_text_parts) if full_text_parts else None,
             tool_calls=tool_calls,
+            usage=usage,
         )

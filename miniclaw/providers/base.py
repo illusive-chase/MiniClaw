@@ -4,6 +4,8 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
+from miniclaw.usage import TokenUsage
+
 
 @dataclass
 class ToolCall:
@@ -30,6 +32,7 @@ class ChatResponse:
 
     text: str | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
+    usage: TokenUsage | None = None
 
 
 class Provider(ABC):

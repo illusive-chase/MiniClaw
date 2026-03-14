@@ -251,7 +251,10 @@ class CostCommand(Command):
 
         lines = [
             "[bold]Session cost & usage[/]",
-            f"  Total cost:         ${usage.total_cost_usd:.4f}",
+        ]
+        if usage.total_cost_usd > 0:
+            lines.append(f"  Total cost:         ${usage.total_cost_usd:.4f}")
+        lines += [
             f"  Input tokens:       {usage.input_tokens:,}",
             f"  Output tokens:      {usage.output_tokens:,}",
         ]
@@ -263,7 +266,7 @@ class CostCommand(Command):
             f"  Total tokens:       {total_tokens:,}",
             f"  Turns:              {usage.num_turns}",
             f"  Requests:           {usage.num_requests}",
-            f"  Duration:           {duration_s:.1f}s (API: {usage.total_api_duration_ms / 1000:.1f}s)",
+            f"  Duration:           {duration_s:.1f}s" + (f" (API: {usage.total_api_duration_ms / 1000:.1f}s)" if usage.total_api_duration_ms else ""),
         ]
         return "\n".join(lines)
 

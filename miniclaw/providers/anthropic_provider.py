@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator
 
 from anthropic import AsyncAnthropic
 
+from miniclaw.usage import TokenUsage
+
 from .base import ChatMessage, ChatResponse, Provider, ToolCall
 
 
@@ -98,6 +100,12 @@ class AnthropicProvider(Provider):
         return ChatResponse(
             text="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
+            usage=TokenUsage(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+            ),
         )
 
     async def chat_stream(
@@ -161,7 +169,17 @@ class AnthropicProvider(Provider):
                             arguments=args if isinstance(args, dict) else {},
                         ))
 
+            final_message = await stream.get_final_message()
+
+        usage = TokenUsage(
+            input_tokens=final_message.usage.input_tokens,
+            output_tokens=final_message.usage.output_tokens,
+            cache_read_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0,
+        )
+
         yield ChatResponse(
             text="".join(full_text_parts) if full_text_parts else None,
             tool_calls=tool_calls,
+            usage=usage,
         )

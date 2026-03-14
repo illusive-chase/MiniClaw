@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -12,6 +13,7 @@ from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.memory.base import Memory
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
+from miniclaw.usage import UsageStats
 
 if TYPE_CHECKING:
     from miniclaw.subagent.executor import SubagentExecutor
@@ -47,22 +49,33 @@ class Agent:
         self._temperature = temperature
         self._subagent_executor = subagent_executor
         self._execution_tracker = execution_tracker
+        self._usage: dict[str, UsageStats] = {}
+
+    def _accumulate_usage(self, response: ChatResponse, session_id: str | None, duration_ms: int = 0) -> None:
+        """Accumulate token usage from a ChatResponse."""
+        key = session_id or "_default"
+        stats = self._usage.setdefault(key, UsageStats())
+        stats.accumulate_token_usage(response.usage, duration_ms)
 
     async def _run_tool_call_loop(
         self,
         messages: list[ChatMessage],
         tool_specs: list[dict],
         model: str | None = None,
+        session_id: str | None = None,
     ) -> str:
         """Run the tool call loop until the LLM returns a text-only response."""
         effective_model = model or self._default_model
         for iteration in range(self._max_tool_iterations):
+            t0 = time.monotonic()
             response = await self._provider.chat(
                 messages=messages,
                 tools=tool_specs if tool_specs else None,
                 model=effective_model,
                 temperature=self._temperature,
             )
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            self._accumulate_usage(response, session_id, elapsed_ms)
 
             if not response.tool_calls:
                 return response.text or ""
@@ -172,7 +185,10 @@ class Agent:
 
         # Run the loop (mutates messages in place with tool-call intermediates)
         pre_loop_len = len(messages)
-        reply = await self._run_tool_call_loop(messages, tool_specs, model=model)
+        # Track turn
+        key = session_id or "_default"
+        self._usage.setdefault(key, UsageStats()).num_turns += 1
+        reply = await self._run_tool_call_loop(messages, tool_specs, model=model, session_id=session_id)
 
         # Build updated history: prior + user + tool-call intermediates + final reply
         updated_history = list(history)
@@ -222,8 +238,13 @@ class Agent:
         pre_loop_len = len(messages)
         reply = ""
 
+        # Track turn
+        key = session_id or "_default"
+        self._usage.setdefault(key, UsageStats()).num_turns += 1
+
         for iteration in range(self._max_tool_iterations):
             # Stream the LLM response
+            t0 = time.monotonic()
             response: ChatResponse | None = None
             async for item in self._provider.chat_stream(
                 messages=messages,
@@ -238,6 +259,9 @@ class Agent:
 
             if response is None:
                 break
+
+            elapsed_ms = int((time.monotonic() - t0) * 1000)
+            self._accumulate_usage(response, session_id, elapsed_ms)
 
             if not response.tool_calls:
                 reply = response.text or ""
@@ -332,3 +356,8 @@ class Agent:
         updated_history.append(ChatMessage(role="assistant", content=reply))
 
         yield (reply, updated_history)
+
+    def get_usage(self, session_id: str | None = None) -> UsageStats:
+        """Return cumulative usage stats for a session."""
+        key = session_id or "_default"
+        return self._usage.setdefault(key, UsageStats())
