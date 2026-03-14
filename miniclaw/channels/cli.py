@@ -272,6 +272,8 @@ class CLIChannel(Channel):
                     # Resume live rendering (footer state preserved)
                     live.start()
                 else:
+                    if buffer:
+                        buffer += "\n"
                     buffer += chunk
                     panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))

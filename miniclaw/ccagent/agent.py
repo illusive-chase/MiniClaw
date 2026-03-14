@@ -592,7 +592,7 @@ class CCAgent:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-        reply = "\n".join(reply_parts) if reply_parts else "(no response)"
+        reply = "".join(reply_parts) if reply_parts else "(no response)"
 
         # Build updated history
         visible_history = [m for m in history if not (m.role == "system" and m.content and m.content.startswith(_SESSION_MARKER))]
