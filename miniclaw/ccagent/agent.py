@@ -501,10 +501,7 @@ class CCAgent:
                             reply_parts.append(text)
                             yield text
                         elif isinstance(block, ToolUseBlock):
-                            short_desc = [v for v in block.input.values() if isinstance(v, str)]
-                            short_desc = short_desc[0] or ''
-                            if len(short_desc) > 40:
-                                short_desc = short_desc[:40] + "..."
+                            short_desc = str(block.input)
                             logger.info("Tool call: %s(%s)", block.name, short_desc)
                             logger.debug("Tool args: %s[id=%s](%s)", block.name, block.id, block.input)
                             # Emit tool START event and track as pending

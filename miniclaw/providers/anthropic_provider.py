@@ -1,5 +1,8 @@
 """Anthropic Claude provider."""
 
+import json
+from collections.abc import AsyncIterator
+
 from anthropic import AsyncAnthropic
 
 from .base import ChatMessage, ChatResponse, Provider, ToolCall
@@ -94,5 +97,71 @@ class AnthropicProvider(Provider):
 
         return ChatResponse(
             text="\n".join(text_parts) if text_parts else None,
+            tool_calls=tool_calls,
+        )
+
+    async def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str | ChatResponse]:
+        system, api_msgs = self._to_api_messages(messages)
+
+        kwargs = {
+            "model": model or self._model,
+            "messages": api_msgs,
+            "max_tokens": 4096,
+            "temperature": temperature,
+        }
+        if system:
+            kwargs["system"] = system
+        if tools:
+            kwargs["tools"] = self._to_api_tools(tools)
+
+        full_text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        # Track in-progress tool_use blocks: index -> {id, name, json_fragments}
+        pending_tools: dict[int, dict] = {}
+        block_index = 0
+
+        async with self._client.messages.stream(**kwargs) as stream:
+            async for event in stream:
+                if event.type == "content_block_start":
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        pending_tools[event.index] = {
+                            "id": block.id,
+                            "name": block.name,
+                            "json_fragments": [],
+                        }
+                    block_index = event.index
+                elif event.type == "content_block_delta":
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        full_text_parts.append(delta.text)
+                        yield delta.text
+                    elif delta.type == "input_json_delta":
+                        idx = event.index
+                        if idx in pending_tools:
+                            pending_tools[idx]["json_fragments"].append(delta.partial_json)
+                elif event.type == "content_block_stop":
+                    idx = event.index
+                    if idx in pending_tools:
+                        info = pending_tools.pop(idx)
+                        raw = "".join(info["json_fragments"])
+                        try:
+                            args = json.loads(raw) if raw else {}
+                        except json.JSONDecodeError:
+                            args = {}
+                        tool_calls.append(ToolCall(
+                            id=info["id"],
+                            name=info["name"],
+                            arguments=args if isinstance(args, dict) else {},
+                        ))
+
+        yield ChatResponse(
+            text="".join(full_text_parts) if full_text_parts else None,
             tool_calls=tool_calls,
         )

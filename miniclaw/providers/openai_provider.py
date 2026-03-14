@@ -1,6 +1,7 @@
 """OpenAI-compatible provider (works with OpenAI, Ollama, vLLM, Azure)."""
 
 import json
+from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
@@ -75,5 +76,76 @@ class OpenAIProvider(Provider):
 
         return ChatResponse(
             text=message.content,
+            tool_calls=tool_calls,
+        )
+
+    async def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str | ChatResponse]:
+        kwargs = {
+            "model": model or self._model,
+            "messages": self._to_api_messages(messages),
+            "temperature": temperature,
+            "stream": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+
+        full_text_parts: list[str] = []
+        # Accumulate tool calls by index: {index: {id, name, arg_fragments}}
+        pending_tools: dict[int, dict] = {}
+
+        response = await self._client.chat.completions.create(**kwargs)
+        async for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+
+            # Text content
+            if delta.content:
+                full_text_parts.append(delta.content)
+                yield delta.content
+
+            # Tool call fragments
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in pending_tools:
+                        pending_tools[idx] = {
+                            "id": tc_delta.id or "",
+                            "name": "",
+                            "arg_fragments": [],
+                        }
+                    entry = pending_tools[idx]
+                    if tc_delta.id:
+                        entry["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            entry["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            entry["arg_fragments"].append(tc_delta.function.arguments)
+
+        # Build final tool calls
+        tool_calls: list[ToolCall] = []
+        for idx in sorted(pending_tools):
+            info = pending_tools[idx]
+            raw = "".join(info["arg_fragments"])
+            try:
+                args = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            tool_calls.append(ToolCall(
+                id=info["id"],
+                name=info["name"],
+                arguments=args,
+            ))
+
+        yield ChatResponse(
+            text="".join(full_text_parts) if full_text_parts else None,
             tool_calls=tool_calls,
         )

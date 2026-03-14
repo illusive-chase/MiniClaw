@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
+from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.memory.base import Memory
-from miniclaw.providers.base import ChatMessage, Provider
+from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
 
 if TYPE_CHECKING:
@@ -178,3 +181,154 @@ class Agent:
         updated_history.append(ChatMessage(role="assistant", content=reply))
 
         return reply, updated_history
+
+    async def process_message_stream(
+        self,
+        user_text: str,
+        history: list[ChatMessage],
+        model: str | None = None,
+        session_id: str | None = None,
+    ) -> AsyncIterator[str | ActivityEvent | tuple[str, list[ChatMessage]]]:
+        """Stream a response. Yields str chunks, ActivityEvents, and a final sentinel tuple."""
+        # Build messages (same setup as process_message)
+        messages: list[ChatMessage] = []
+
+        system_parts = [self._system_prompt] if self._system_prompt else []
+        tool_names = self._tools.list_names()
+        if self._subagent_executor is not None:
+            tool_names = tool_names + ["subagent", "threads"]
+        if tool_names:
+            system_parts.append(f"Available tools: {', '.join(tool_names)}")
+
+        context = await self._build_context(user_text)
+        if context:
+            system_parts.append(context)
+
+        if system_parts:
+            messages.append(ChatMessage(role="system", content="\n\n".join(system_parts)))
+
+        messages.extend(history)
+        user_msg = ChatMessage(role="user", content=user_text)
+        messages.append(user_msg)
+
+        tool_specs = self._tools.all_specs()
+        if self._subagent_executor is not None:
+            tool_specs = tool_specs + [
+                self._subagent_executor.subagent_spec(),
+                self._subagent_executor.threads_spec(),
+            ]
+
+        effective_model = model or self._default_model
+        pre_loop_len = len(messages)
+        reply = ""
+
+        for iteration in range(self._max_tool_iterations):
+            # Stream the LLM response
+            response: ChatResponse | None = None
+            async for item in self._provider.chat_stream(
+                messages=messages,
+                tools=tool_specs if tool_specs else None,
+                model=effective_model,
+                temperature=self._temperature,
+            ):
+                if isinstance(item, ChatResponse):
+                    response = item
+                else:
+                    yield item  # str text delta
+
+            if response is None:
+                break
+
+            if not response.tool_calls:
+                reply = response.text or ""
+                break
+
+            # Append assistant message with tool calls
+            messages.append(ChatMessage(
+                role="assistant",
+                content=response.text,
+                tool_calls=response.tool_calls,
+            ))
+
+            # Execute each tool call with activity events
+            for tc in response.tool_calls:
+                tc_event_id = tc.id or str(uuid4())
+                logger.info(f"Tool call: {tc.name}({json.dumps(tc.arguments, ensure_ascii=False)[:200]})")
+
+                yield ActivityEvent(
+                    kind=ActivityKind.TOOL,
+                    status=ActivityStatus.START,
+                    id=tc_event_id,
+                    name=tc.name,
+                )
+
+                if tc.name == "subagent" and self._subagent_executor is not None:
+                    agent_id = str(uuid4())
+                    yield ActivityEvent(
+                        kind=ActivityKind.AGENT,
+                        status=ActivityStatus.START,
+                        id=agent_id,
+                        name="subagent",
+                    )
+                    try:
+                        result_text = await self._subagent_executor.run(
+                            tc.arguments, self._execution_tracker
+                        )
+                        yield ActivityEvent(
+                            kind=ActivityKind.AGENT,
+                            status=ActivityStatus.FINISH,
+                            id=agent_id,
+                            name="subagent",
+                        )
+                    except Exception as e:
+                        result_text = f"Error: {e}"
+                        yield ActivityEvent(
+                            kind=ActivityKind.AGENT,
+                            status=ActivityStatus.FAILED,
+                            id=agent_id,
+                            name="subagent",
+                        )
+                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                elif tc.name == "threads" and self._execution_tracker is not None:
+                    result_text = self._execution_tracker.summary()
+                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                else:
+                    tool = self._tools.get(tc.name)
+                    if tool is None:
+                        result_text = f"Error: unknown tool '{tc.name}'"
+                        logger.warning(result_text)
+                    else:
+                        result = await tool.execute(tc.arguments)
+                        result_text = result.output
+                        if not result.success:
+                            result_text = f"[FAILED] {result_text}"
+                        logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+
+                tool_status = (
+                    ActivityStatus.FAILED if result_text.startswith(("[FAILED]", "Error:"))
+                    else ActivityStatus.FINISH
+                )
+                yield ActivityEvent(
+                    kind=ActivityKind.TOOL,
+                    status=tool_status,
+                    id=tc_event_id,
+                    name=tc.name,
+                )
+
+                messages.append(ChatMessage(
+                    role="tool",
+                    content=result_text,
+                    tool_call_id=tc.id,
+                ))
+        else:
+            # Max iterations reached
+            last_text = messages[-1].content if messages else ""
+            reply = f"{last_text}\n\n(Warning: reached maximum tool iterations ({self._max_tool_iterations}))"
+
+        # Build updated history and yield sentinel
+        updated_history = list(history)
+        updated_history.append(user_msg)
+        updated_history.extend(messages[pre_loop_len:])
+        updated_history.append(ChatMessage(role="assistant", content=reply))
+
+        yield (reply, updated_history)

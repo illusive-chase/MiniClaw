@@ -64,7 +64,7 @@ DEFAULT_CONFIG = {
     "ccagent": {
         "system_prompt": "",
         "model": "claude-opus-4-6",
-        "permission_mode": "plan",
+        "permission_mode": "default",
         "allowed_tools": [
             "Read",
             "Write",

@@ -1,6 +1,7 @@
 """Provider ABC and data classes for LLM interaction."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 
 
@@ -44,3 +45,16 @@ class Provider(ABC):
     ) -> ChatResponse:
         """Send messages to the LLM and get a response."""
         ...
+
+    @abstractmethod
+    async def chat_stream(
+        self,
+        messages: list[ChatMessage],
+        tools: list[dict] | None = None,
+        model: str | None = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str | ChatResponse]:
+        """Stream a response. Yields str text deltas, then a final ChatResponse."""
+        ...
+        # Make it an async generator so subclasses can use `yield`
+        yield  # type: ignore[misc]  # pragma: no cover
