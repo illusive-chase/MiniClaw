@@ -4,15 +4,21 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 SUBAGENT_TYPES: dict[str, list[str]] = {
-    "reader": ["file_read"],
-    "editor": ["file_read", "file_edit", "file_write"],
-    "executor": ["file_read", "file_edit", "file_write", "git", "shell"],
+    "reader": ["file_read", "glob", "grep"],
+    "editor": ["file_read", "file_edit", "file_write", "glob", "grep"],
+    "executor": ["file_read", "file_edit", "file_write", "git", "shell", "glob", "grep"],
 }
 
 SUBAGENT_DESCS: dict[str, str] = {
-    "reader": "Read files.",
-    "editor": "Read/edit files.",
-    "executor": "Read/edit files; execute shell commands.",
+    "reader": "Search/read files",
+    "editor": "Search/read/edit files.",
+    "executor": "Search/read/edit files; execute shell commands.",
+}
+
+SUBAGENT_DEFAULT_MODELS: dict[str, str] = {
+    "reader": "claude-sonnet-4-6",
+    "editor": "claude-opus-4-6",
+    "executor": "claude-opus-4-6",
 }
 
 SUBAGENT_PROMPTS: dict[str, str] = {
@@ -25,7 +31,7 @@ SUBAGENT_PROMPTS: dict[str, str] = {
         "as requested. Be precise with edits and preserve existing formatting."
     ),
     "executor": (
-        "You are a task executor assistant. Your job is to read/edit files and run "
+        "You are a general assistant. Your can to read/edit files and run "
         "shell commands as requested. Be careful with destructive operations."
     ),
 }

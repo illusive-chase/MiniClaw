@@ -6,7 +6,7 @@ from .base import Tool, ToolResult
 
 
 class FileReadTool(Tool):
-    def __init__(self, workspace_dir: str = "."):
+    def __init__(self, workspace_dir: str = ".workspace"):
         self._workspace_dir = Path(workspace_dir)
 
     def name(self) -> str:

@@ -49,7 +49,7 @@ def discover_tools(tools_dir: Path) -> list[Tool]:
 def create_registry(config: dict, memory=None) -> ToolRegistry:
     """Create a tool registry with built-in tools and auto-discovered tools."""
     registry = ToolRegistry()
-    workspace_dir = config.get("agent", {}).get("workspace_dir", ".")
+    workspace_dir = config.get("agent", {}).get("workspace_dir", ".workspace")
     deny_set = set(config.get("agent", {}).get("tool_deny_list", []))
 
     # Auto-discover tool classes

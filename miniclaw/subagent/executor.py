@@ -7,7 +7,12 @@ from miniclaw.providers.base import Provider
 from miniclaw.tools import ToolRegistry
 
 from .tracker import ExecutionTracker
-from .types import SUBAGENT_DESCS, SUBAGENT_PROMPTS, SUBAGENT_TYPES
+from .types import (
+    SUBAGENT_DEFAULT_MODELS,
+    SUBAGENT_DESCS,
+    SUBAGENT_PROMPTS,
+    SUBAGENT_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +43,7 @@ class SubagentExecutor:
 
         agent_type = args.get("type", "")
         task = args.get("task", "")
-        model = args.get("model")
+        model = args.get("model") or SUBAGENT_DEFAULT_MODELS.get(agent_type) or self._default_model
 
         if agent_type not in SUBAGENT_TYPES:
             return f"Unknown subagent type '{agent_type}'. Valid types: {', '.join(SUBAGENT_TYPES)}"
