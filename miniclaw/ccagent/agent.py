@@ -118,7 +118,8 @@ class CCAgent:
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
-                            reply_parts.append(block.text)
+                            text = block.text if block.text.endswith("\n") else block.text + "\n"
+                            reply_parts.append(text)
                         elif isinstance(block, ToolUseBlock):
                             logger.info("Tool use: %s", block.name)
 
@@ -175,8 +176,9 @@ class CCAgent:
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
                         if isinstance(block, TextBlock):
-                            reply_parts.append(block.text)
-                            yield block.text
+                            text = block.text if block.text.endswith("\n") else block.text + "\n"
+                            reply_parts.append(text)
+                            yield text
                         elif isinstance(block, ToolUseBlock):
                             logger.info("Tool use: %s", block.name)
 
