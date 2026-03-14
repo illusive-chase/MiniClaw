@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+from copy import deepcopy
 
 from miniclaw.agent import Agent
 from miniclaw.channels import create_channel
@@ -123,9 +124,12 @@ def main():
     execution_tracker = None
     if "subagent" not in deny_set:
         execution_tracker = ExecutionTracker()
+        subagent_config = deepcopy(config)
+        if "tool_deny_list" in subagent_config["agent"]:
+            subagent_config["agent"]["tool_deny_list"] = []
         subagent_executor = SubagentExecutor(
             provider=provider,
-            tool_registry=tool_registry,
+            tool_registry=create_registry(subagent_config),
             memory=memory,
             default_model=config["provider"].get("model"),
             temperature=config["provider"].get("temperature", 0.7),
