@@ -455,7 +455,10 @@ class CCAgent:
                             reply_parts.append(text)
                             yield text
                         elif isinstance(block, ToolUseBlock):
-                            logger.info("Tool call: %s", block.name)
+                            short_desc = str(block.input)
+                            if len(short_desc) > 40:
+                                short_desc = short_desc[:40] + "..."
+                            logger.info("Tool call: %s(%s)", block.name, short_desc)
                             logger.debug("Tool args: %s(%s)", block.name, block.input)
 
                 elif isinstance(message, ResultMessage):
