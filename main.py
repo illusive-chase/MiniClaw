@@ -8,11 +8,11 @@ from miniclaw.agent import Agent
 from miniclaw.channels import create_channel
 from miniclaw.config import load_config
 from miniclaw.gateway import Gateway
+from miniclaw.log import adjust_root_level, setup_file_logging
 from miniclaw.memory import create_memory
 from miniclaw.providers import create_provider
 from miniclaw.session import SessionManager
 from miniclaw.tools import create_registry
-from miniclaw.ui import setup_rich_logging
 
 _LOG_LEVEL_MAP = {
     "debug": logging.DEBUG,
@@ -79,11 +79,8 @@ def main():
 
     workspace_dir = config["agent"].get("workspace_dir", ".workspace")
 
-    logging_handles = setup_rich_logging(
-        console_level=console_level,
-        file_level=file_level,
-        workspace_dir=workspace_dir,
-    )
+    # Phase 1: file-only logging (before channel creation)
+    setup_file_logging(file_level=file_level, workspace_dir=workspace_dir)
 
     # Apply CLI overrides
     if args.channel:
@@ -93,12 +90,21 @@ def main():
     if args.model:
         config["provider"]["model"] = args.model
 
+    # Inject console_level into channel config for CLIChannel to read
+    config["channel"]["console_level"] = console_level
+
     # Build components
     provider = create_provider(config["provider"])
     memory = create_memory(config["memory"])
     tool_registry = create_registry(config, memory=memory)
     channel = create_channel(config["channel"])
     session_manager = SessionManager(workspace_dir)
+
+    # Phase 2: register channel's log handler (if any)
+    channel_handler = channel.log_handler()
+    if channel_handler is not None:
+        logging.root.addHandler(channel_handler)
+        adjust_root_level()
 
     agent = Agent(
         provider=provider,
@@ -112,10 +118,6 @@ def main():
 
     gateway = Gateway(agent=agent, session_manager=session_manager)
     gateway.register_channel(channel)
-
-    # Wire channel-specific bindings
-    if hasattr(channel, "bind_logging_handles"):
-        channel.bind_logging_handles(logging_handles)
 
     logging.getLogger(__name__).info(
         f"Starting MiniClaw: provider={config['provider']['type']}, "

@@ -7,10 +7,11 @@ import logging
 import sys
 from typing import TYPE_CHECKING
 
+from rich.console import Console
+from rich.logging import RichHandler
 from rich.markdown import Markdown
 from rich.panel import Panel
-
-from miniclaw.ui import LoggingHandles, console
+from rich.theme import Theme
 
 from .base import Channel, SendMessage
 from .commands import CommandContext, create_default_registry
@@ -28,23 +29,38 @@ class CLIChannel(Channel):
         config = config or {}
         self._render_markdown = config.get("render_markdown", True)
         self._registry = create_default_registry()
-        self._logging_handles: LoggingHandles | None = None
         self._gw: Gateway | None = None
         self._session_id: str | None = None
 
-    def bind_logging_handles(self, handles: LoggingHandles) -> None:
-        """Attach logging handles so /output show-logging can adjust levels."""
-        self._logging_handles = handles
+        self._console = Console(theme=Theme({
+            "markdown.code": "bold magenta on white",
+            "markdown.code_block": "magenta on white",
+            "markdown.hr": "gray70",
+        }))
+
+        console_level = config.get("console_level", logging.INFO)
+        self._console_handler = RichHandler(
+            console=self._console,
+            rich_tracebacks=True,
+            tracebacks_show_locals=False,
+        )
+        self._console_handler.setFormatter(
+            logging.Formatter("%(message)s", datefmt="[%X]")
+        )
+        self._console_handler.setLevel(console_level)
+
+    def log_handler(self) -> logging.Handler | None:
+        return self._console_handler
 
     def replay_message(self, role: str, text: str) -> None:
         """Replay a historical message during session resume."""
         if role == "user":
-            console.print(f"\n[bold green]You:[/] {text}")
+            self._console.print(f"\n[bold green]You:[/] {text}")
         elif role == "assistant":
             if self._render_markdown:
-                console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
+                self._console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
             else:
-                console.print(f"\nAssistant: {text}")
+                self._console.print(f"\nAssistant: {text}")
 
     def command_descriptions(self) -> list[dict]:
         """Return all command descriptions for /help."""
@@ -58,11 +74,11 @@ class CLIChannel(Channel):
         self._gw = gateway
         self._session_id = gateway.allocate_session("cli_user")
 
-        console.print(Panel("MiniClaw CLI", subtitle="type /help for commands", style="bold cyan"))
+        self._console.print(Panel("MiniClaw CLI", subtitle="type /help for commands", style="bold cyan"))
         loop = asyncio.get_event_loop()
         while True:
             try:
-                console.print("\n[bold green]You:[/] ", end="")
+                self._console.print("\n[bold green]You:[/] ", end="")
                 line = await loop.run_in_executor(None, sys.stdin.readline)
                 line = line.strip()
                 if not line:
@@ -70,7 +86,7 @@ class CLIChannel(Channel):
 
                 # Backward compat: bare quit/exit
                 if line.lower() in ("quit", "exit"):
-                    console.print("[dim]Goodbye![/dim]")
+                    self._console.print("[dim]Goodbye![/dim]")
                     break
 
                 # Slash commands
@@ -79,7 +95,6 @@ class CLIChannel(Channel):
                         channel=self,
                         gateway=self._gw,
                         session_id=self._session_id,
-                        logging_handles=self._logging_handles,
                     )
                     resolved = self._registry.resolve(line[1:])
                     if resolved:
@@ -89,24 +104,24 @@ class CLIChannel(Channel):
                             # Update session_id in case a command changed it (e.g. /resume)
                             self._session_id = ctx.channel._session_id
                             if result:
-                                console.print(result)
+                                self._console.print(result)
                         except SystemExit:
-                            console.print("[dim]Goodbye![/dim]")
+                            self._console.print("[dim]Goodbye![/dim]")
                             break
                     else:
-                        console.print(f"Unknown command: {line}. Type /help for available commands.")
+                        self._console.print(f"Unknown command: {line}. Type /help for available commands.")
                     continue
 
                 # Regular message — show spinner
-                with console.status("[bold cyan]Thinking...", spinner="dots"):
+                with self._console.status("[bold cyan]Thinking...", spinner="dots"):
                     reply = await self._gw.process_message(self._session_id, line)
                 await self.send(SendMessage(text=reply))
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Goodbye![/dim]")
+                self._console.print("\n[dim]Goodbye![/dim]")
                 break
 
     async def send(self, message: SendMessage) -> None:
         if self._render_markdown:
-            console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
+            self._console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
         else:
-            console.print(f"\nAssistant: {message.text}")
+            self._console.print(f"\nAssistant: {message.text}")

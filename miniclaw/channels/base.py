@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -51,3 +52,15 @@ class Channel(ABC):
     def command_descriptions(self) -> list[dict]:
         """Return command descriptions for /help. Default: empty."""
         return []
+
+    def log_handler(self) -> logging.Handler | None:
+        """Return this channel's log forwarding handler, or None."""
+        return None
+
+    def set_log_level(self, level: int) -> None:
+        """Adjust forwarding level. Calls adjust_root_level() after change."""
+        handler = self.log_handler()
+        if handler is not None:
+            handler.setLevel(level)
+            from miniclaw.log import adjust_root_level
+            adjust_root_level()

@@ -7,8 +7,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from miniclaw.ui import console
-
 logger = logging.getLogger(__name__)
 
 
@@ -19,7 +17,6 @@ class CommandContext:
     channel: Any  # Channel reference
     gateway: Any  # Gateway reference
     session_id: str  # Current session ID
-    logging_handles: Any = None  # LoggingHandles from ui.py (may be None)
 
 
 class Command(ABC):
@@ -171,13 +168,13 @@ class OutputShowLoggingCommand(Command):
         return "/output show-logging <level>"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        if ctx.logging_handles is None:
-            return "Logging handles not available."
+        if ctx.channel.log_handler() is None:
+            return "This channel does not support log level adjustment."
         level = self._LEVEL_MAP.get(args.lower().strip())
         if level is None:
             valid = ", ".join(sorted(self._LEVEL_MAP.keys()))
             return f"Unknown level '{args}'. Valid: {valid}"
-        ctx.logging_handles.console_handler.setLevel(level)
+        ctx.channel.set_log_level(level)
         label = args.lower().strip()
         return f"Console log level set to {label}."
 
