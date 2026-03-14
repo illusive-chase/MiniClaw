@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -79,6 +80,29 @@ class Gateway:
             return reply
 
         return await self._with_session_lock(session_id, _do)
+
+    async def process_message_stream(
+        self, session_id: str, text: str
+    ) -> AsyncIterator[str]:
+        """Stream a response. Yields str chunks. Updates session state on completion."""
+        lock = self._locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            state = self._states[session_id]
+            if hasattr(self._agent, "process_message_stream"):
+                async for item in self._agent.process_message_stream(
+                    text, list(state.history), model=state.model
+                ):
+                    if isinstance(item, tuple):  # sentinel: (reply, history)
+                        state.history = item[1]
+                    else:
+                        yield item  # str chunk
+            else:
+                # Fallback for regular Agent (non-streaming)
+                reply, updated = await self._agent.process_message(
+                    text, list(state.history), model=state.model
+                )
+                state.history = updated
+                yield reply
 
     # --- Session state queries (called by channel commands) ---
 

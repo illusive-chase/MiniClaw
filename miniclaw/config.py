@@ -62,6 +62,14 @@ DEFAULT_CONFIG = {
         "console_level": "info",
         "file_level": "warning",
     },
+    "ccagent": {
+        "system_prompt": "",
+        "model": "claude-opus-4-6",
+        "permission_mode": "plan",
+        "allowed_tools": ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "AskUserQuestion"],
+        "max_turns": None,
+        "cwd": None,
+    },
 }
 
 

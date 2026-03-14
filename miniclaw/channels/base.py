@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -48,6 +49,14 @@ class Channel(ABC):
     def replay_message(self, role: str, text: str) -> None:
         """Replay a historical message during session resume. Default: no-op."""
         pass
+
+    async def send_stream(self, stream: AsyncIterator[str]) -> None:
+        """Send a streamed response. Default: buffer and call send()."""
+        chunks: list[str] = []
+        async for chunk in stream:
+            chunks.append(chunk)
+        if chunks:
+            await self.send(SendMessage(text="".join(chunks)))
 
     def command_descriptions(self) -> list[dict]:
         """Return command descriptions for /help. Default: empty."""

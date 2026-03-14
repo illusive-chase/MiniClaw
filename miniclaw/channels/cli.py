@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -112,10 +113,14 @@ class CLIChannel(Channel):
                         self._console.print(f"Unknown command: {line}. Type /help for available commands.")
                     continue
 
-                # Regular message — show spinner
-                with self._console.status("[bold cyan]Thinking...", spinner="dots"):
-                    reply = await self._gw.process_message(self._session_id, line)
-                await self.send(SendMessage(text=reply))
+                # Regular message — use streaming if gateway supports it
+                if hasattr(self._gw, "process_message_stream"):
+                    stream = self._gw.process_message_stream(self._session_id, line)
+                    await self.send_stream(stream)
+                else:
+                    with self._console.status("[bold cyan]Thinking...", spinner="dots"):
+                        reply = await self._gw.process_message(self._session_id, line)
+                    await self.send(SendMessage(text=reply))
             except (EOFError, KeyboardInterrupt):
                 self._console.print("\n[dim]Goodbye![/dim]")
                 break
@@ -125,3 +130,10 @@ class CLIChannel(Channel):
             self._console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
         else:
             self._console.print(f"\nAssistant: {message.text}")
+
+    async def send_stream(self, stream: AsyncIterator[str]) -> None:
+        """Stream response chunks directly to the console."""
+        self._console.print("\n[blue]Assistant:[/blue] ", end="")
+        async for chunk in stream:
+            self._console.print(chunk, end="", highlight=False)
+        self._console.print()  # final newline
