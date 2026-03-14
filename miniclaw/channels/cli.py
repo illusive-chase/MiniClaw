@@ -68,11 +68,10 @@ class ActivityFooter:
 
 
         # Tools line
-        if snap.tool_running > 0 or snap.tool_done > 0:
+        if snap.tool_total > 0:
             line = Text()
             line.append("  Tools: ", style="bold dim")
-            line.append(f"{snap.tool_running} running", style="bold yellow" if snap.tool_running > 0 else "dim")
-            line.append(f" / {snap.tool_done} done", style="dim")
+            line.append(f"{snap.tool_done}/{snap.tool_total} done", style="bold yellow" if snap.tool_done < snap.tool_total else "dim")
             if snap.tool_earliest:
                 line.append(f"  [{_format_elapsed(snap.tool_earliest, snap.tool_finished)}]", style="bold cyan")
             yield line
@@ -99,11 +98,10 @@ class ActivityFooter:
                 yield detail
 
         # Agents section
-        if snap.agent_running > 0 or snap.agent_done > 0:
+        if snap.agent_total > 0:
             line = Text()
             line.append("  Agents: ", style="bold dim")
-            line.append(f"{snap.agent_running} running", style="bold yellow" if snap.agent_running > 0 else "dim")
-            line.append(f" / {snap.agent_done} done", style="dim")
+            line.append(f"{snap.agent_done}/{snap.agent_total} done", style="bold yellow" if snap.agent_done < snap.agent_total else "dim")
             if snap.agent_earliest:
                 line.append(f"  [{_format_elapsed(snap.agent_earliest, snap.agent_finished)}]", style="bold cyan")
             yield line
@@ -114,7 +112,7 @@ class ActivityFooter:
                     detail.append("    ● ", style="bold yellow")
                 elif recent.status == ActivityStatus.FINISH:
                     detail.append("    ✓ ", style="green")
-                elif recent.status == ActivityStatus.FAIL:
+                elif recent.status == ActivityStatus.FAILED:
                     detail.append("    ✗ ", style="bold red")
 
                 summary = recent.summary

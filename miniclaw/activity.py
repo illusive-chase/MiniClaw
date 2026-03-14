@@ -35,6 +35,9 @@ class ActivityEvent:
     timestamp: float = field(default_factory=time.monotonic)
     finished: float | None = None  # set on FINISH/FAILED
 
+    def update(self, other: ActivityEvent) -> None:
+        self.status = other.status
+        self.finished = other.finished
 
 @dataclass
 class ActivitySnapshot:
@@ -46,26 +49,14 @@ class ActivitySnapshot:
     agent_finished: float | None = None  # latest agent finish; None if any still running
     agent_recents: list[ActivityEvent] = field(default_factory=list)
     tool_recents: list[ActivityEvent] = field(default_factory=list)
-
-    @property
-    def tool_running(self) -> int:
-        return len([e for e in self.tool_recents if e.status in (ActivityStatus.START, ActivityStatus.PROGRESS)])
-
-    @property
-    def tool_done(self) -> int:
-        return len([e for e in self.tool_recents if e.status in (ActivityStatus.FINISH, ActivityStatus.FAILED)])
-
-    @property
-    def agent_running(self) -> int:
-        return len([e for e in self.agent_recents if e.status in (ActivityStatus.START, ActivityStatus.PROGRESS)])
-
-    @property
-    def agent_done(self) -> int:
-        return len([e for e in self.agent_recents if e.status in (ActivityStatus.FINISH, ActivityStatus.FAILED)])
+    tool_done: int = 0
+    tool_total: int = 0
+    agent_done: int = 0
+    agent_total: int = 0
 
     @property
     def has_activity(self) -> bool:
-        return len(self.agent_recents) > 0 or len(self.tool_recents) > 0
+        return (self.tool_total + self.agent_total) > 0
 
 
 class ActivityTracker:
@@ -81,9 +72,9 @@ class ActivityTracker:
         if event.status in (ActivityStatus.FINISH, ActivityStatus.FAILED):
             event.finished = time.monotonic()
         if event.kind == ActivityKind.TOOL:
-            self._active_tools[event.id].status = event.status
+            self._active_tools.setdefault(event.id, event).update(event)
         elif event.kind == ActivityKind.AGENT:
-            self._active_agents[event.id].status = event.status
+            self._active_agents.setdefault(event.id, event).update(event)
 
     def snapshot(self, n: int = 5) -> ActivitySnapshot:
         if not self._active_tools and not self._active_agents:
@@ -112,6 +103,8 @@ class ActivityTracker:
             if all_done:
                 agent_finished = max(e.finished for e in self._active_agents.values())  # type: ignore[arg-type]
 
+        done_statuses = (ActivityStatus.FINISH, ActivityStatus.FAILED)
+
         return ActivitySnapshot(
             tool_earliest=tool_earliest,
             tool_finished=tool_finished,
@@ -119,6 +112,10 @@ class ActivityTracker:
             agent_finished=agent_finished,
             agent_recents=sorted(self._active_agents.values(), key=lambda e: e.timestamp, reverse=True)[:n],
             tool_recents=sorted(self._active_tools.values(), key=lambda e: e.timestamp, reverse=True)[:n],
+            tool_done=sum(1 for e in self._active_tools.values() if e.status in done_statuses),
+            tool_total=len(self._active_tools),
+            agent_done=sum(1 for e in self._active_agents.values() if e.status in done_statuses),
+            agent_total=len(self._active_agents),
         )
 
     def reset(self) -> None:
