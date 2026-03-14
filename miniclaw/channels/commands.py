@@ -112,7 +112,7 @@ class OutputCommand(Command):
         return "output"
 
     def description(self) -> str:
-        return "Output settings (subcommands: markdown, show-logging)"
+        return "Output settings (subcommands: logging)"
 
     def usage(self) -> str:
         return "/output <subcommand>"
@@ -120,31 +120,8 @@ class OutputCommand(Command):
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
         return (
             "Subcommands:\n"
-            "  /output markdown [on|off]          Toggle Markdown rendering\n"
-            "  /output show-logging [level|off]    Set console log level"
+            "  /output logging [level|off]    Set console log level"
         )
-
-
-class OutputMarkdownCommand(Command):
-    def name(self) -> str:
-        return "output markdown"
-
-    def description(self) -> str:
-        return "Toggle Markdown panel rendering (on/off)"
-
-    def usage(self) -> str:
-        return "/output markdown [on|off]"
-
-    async def execute(self, args: str, ctx: CommandContext) -> str | None:
-        if args.lower() in ("off", "false", "0"):
-            ctx.channel._render_markdown = False
-            return "Markdown rendering disabled."
-        elif args.lower() in ("on", "true", "1"):
-            ctx.channel._render_markdown = True
-            return "Markdown rendering enabled."
-        else:
-            current = "on" if ctx.channel._render_markdown else "off"
-            return f"Markdown rendering is currently {current}. Use /output markdown on|off."
 
 
 class OutputShowLoggingCommand(Command):
@@ -159,13 +136,13 @@ class OutputShowLoggingCommand(Command):
     }
 
     def name(self) -> str:
-        return "output show-logging"
+        return "output logging"
 
     def description(self) -> str:
         return "Set console log level (debug/info/warning/error/off)"
 
     def usage(self) -> str:
-        return "/output show-logging <level>"
+        return "/output logging <level>"
 
     async def execute(self, args: str, ctx: CommandContext) -> str | None:
         if ctx.channel.log_handler() is None:
@@ -297,7 +274,6 @@ def create_default_registry() -> CommandRegistry:
     registry.register(QuitCommand())
     registry.register(HelpCommand())
     registry.register(OutputCommand())
-    registry.register(OutputMarkdownCommand())
     registry.register(OutputShowLoggingCommand())
     registry.register(ModelCommand())
     registry.register(ResetCommand())

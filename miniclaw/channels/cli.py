@@ -5,16 +5,25 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
-from rich.console import Console
-from rich.logging import RichHandler
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
+from rich.logging import RichHandler
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.text import Text
 from rich.theme import Theme
 
+from miniclaw.activity import (
+    ActivityEvent,
+    ActivitySnapshot,
+    ActivityStatus,
+    ActivityTracker,
+)
 from miniclaw.interactions import (
     InteractionRequest,
     InteractionResponse,
@@ -30,12 +39,114 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _format_elapsed(start: float, end: float | None = None) -> str:
+    """Format elapsed time from a monotonic timestamp.
+
+    If *end* is provided the duration is frozen; otherwise it ticks live.
+    """
+    elapsed = (end if end is not None else time.monotonic()) - start
+    if elapsed < 60:
+        return f"{elapsed:.0f}s"
+    minutes = int(elapsed) // 60
+    seconds = int(elapsed) % 60
+    return f"{minutes}m{seconds:02d}s"
+
+
+class ActivityFooter:
+    """Rich renderable that shows real-time tool/subagent activity status."""
+
+    def __init__(self) -> None:
+        self._snapshot: ActivitySnapshot | None = None
+
+    def update(self, snapshot: ActivitySnapshot) -> None:
+        self._snapshot = snapshot
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        snap = self._snapshot
+        if snap is None or not snap.has_activity:
+            return
+
+
+        # Tools line
+        if snap.tool_running > 0 or snap.tool_done > 0:
+            line = Text()
+            line.append("  Tools: ", style="bold dim")
+            line.append(f"{snap.tool_running} running", style="bold yellow" if snap.tool_running > 0 else "dim")
+            line.append(f" / {snap.tool_done} done", style="dim")
+            if snap.tool_earliest:
+                line.append(f"  [{_format_elapsed(snap.tool_earliest, snap.tool_finished)}]", style="bold cyan")
+            yield line
+
+            for recent in snap.tool_recents:
+                detail = Text()
+                if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
+                    detail.append("    ● ", style="bold yellow")
+                elif recent.status == ActivityStatus.FINISH:
+                    detail.append("    ✓ ", style="green")
+                elif recent.status == ActivityStatus.FAIL:
+                    detail.append("    ✗ ", style="bold red")
+
+                summary = recent.summary
+                if summary:
+                    label = summary if len(summary) <= 50 else summary[:47] + "..."
+                    detail.append(f"{recent.name}(\"{label}\")", style="italic")
+                else:
+                    detail.append(recent.name, style="italic")
+                if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
+                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold cyan")
+                elif recent.finished is not None:
+                    detail.append(f"  [{_format_elapsed(recent.timestamp, recent.finished)}]", style="dim")
+                yield detail
+
+        # Agents section
+        if snap.agent_running > 0 or snap.agent_done > 0:
+            line = Text()
+            line.append("  Agents: ", style="bold dim")
+            line.append(f"{snap.agent_running} running", style="bold yellow" if snap.agent_running > 0 else "dim")
+            line.append(f" / {snap.agent_done} done", style="dim")
+            if snap.agent_earliest:
+                line.append(f"  [{_format_elapsed(snap.agent_earliest, snap.agent_finished)}]", style="bold cyan")
+            yield line
+
+            for recent in snap.agent_recents:
+                detail = Text()
+                if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
+                    detail.append("    ● ", style="bold yellow")
+                elif recent.status == ActivityStatus.FINISH:
+                    detail.append("    ✓ ", style="green")
+                elif recent.status == ActivityStatus.FAIL:
+                    detail.append("    ✗ ", style="bold red")
+
+                summary = recent.summary
+                if summary:
+                    label = summary if len(summary) <= 50 else summary[:47] + "..."
+                    detail.append(f"{recent.name}(\"{label}\")", style="italic")
+                else:
+                    detail.append(recent.name, style="italic")
+                if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
+                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold cyan")
+                elif recent.finished is not None:
+                    detail.append(f"  [{_format_elapsed(recent.timestamp, recent.finished)}]", style="dim")
+                yield detail
+
+
+class StreamDisplay:
+    """Composite renderable: Panel + ActivityFooter."""
+
+    def __init__(self, panel: Panel, footer: ActivityFooter) -> None:
+        self._panel = panel
+        self._footer = footer
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        yield self._panel
+        yield from self._footer.__rich_console__(console, options)
+
+
 class CLIChannel(Channel):
     """Interactive command-line channel for testing."""
 
     def __init__(self, config: dict | None = None):
         config = config or {}
-        self._render_markdown = config.get("render_markdown", True)
         self._registry = create_default_registry()
         self._gw: Gateway | None = None
         self._session_id: str | None = None
@@ -65,10 +176,7 @@ class CLIChannel(Channel):
         if role == "user":
             self._console.print(f"\n[bold green]You:[/] {text}")
         elif role == "assistant":
-            if self._render_markdown:
-                self._console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
-            else:
-                self._console.print(f"\nAssistant: {text}")
+            self._console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
 
     def command_descriptions(self) -> list[dict]:
         """Return all command descriptions for /help."""
@@ -133,49 +241,44 @@ class CLIChannel(Channel):
                 break
 
     async def send(self, message: SendMessage) -> None:
-        if self._render_markdown:
-            self._console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
-        else:
-            self._console.print(f"\nAssistant: {message.text}")
+        self._console.print(Panel(Markdown(message.text), title="Assistant", border_style="blue"))
 
-    async def send_stream(self, stream: AsyncIterator[str | InteractionRequest]) -> None:
+    async def send_stream(self, stream: AsyncIterator[str | InteractionRequest | ActivityEvent]) -> None:
         """Stream response chunks to the console with progressive markdown.
 
         Handles InteractionRequests inline: pauses rendering, prompts the user,
-        resolves the interaction, then resumes.
+        resolves the interaction, then resumes. ActivityEvents update a status
+        footer below the response panel (markdown mode only).
         """
-        if not self._render_markdown:
-            # Plain text streaming
-            self._console.print("\n[blue]Assistant:[/blue] ", end="")
-            async for chunk in stream:
-                if isinstance(chunk, InteractionRequest):
-                    self._console.print()  # newline before interaction
-                    response = await self._prompt_interaction(chunk)
-                    chunk.resolve(response)
-                    self._console.print("[blue]Assistant:[/blue] ", end="")
-                else:
-                    self._console.print(chunk, end="", highlight=False)
-            self._console.print()
-            return
 
-        # Progressive markdown rendering with interaction support
+        # Progressive markdown rendering with activity footer
         buffer = ""
+        tracker = ActivityTracker()
+        footer = ActivityFooter()
         live = Live(console=self._console, refresh_per_second=8)
         live.start()
         try:
+            # Show thinking spinner until first content arrives
+            spinner = Spinner("dots", text="Thinking...", style="bold cyan")
+            live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="blue"), footer))
+
             async for chunk in stream:
-                if isinstance(chunk, InteractionRequest):
+                if isinstance(chunk, ActivityEvent):
+                    tracker.apply(chunk)
+                    footer.update(tracker.snapshot())
+                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    live.update(StreamDisplay(panel, footer))
+                elif isinstance(chunk, InteractionRequest):
                     # Pause live rendering — SDK is blocked, no new chunks coming
                     live.stop()
                     response = await self._prompt_interaction(chunk)
                     chunk.resolve(response)
-                    # Resume live rendering
+                    # Resume live rendering (footer state preserved)
                     live.start()
                 else:
                     buffer += chunk
-                    live.update(
-                        Panel(Markdown(buffer), title="Assistant", border_style="blue")
-                    )
+                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    live.update(StreamDisplay(panel, footer))
         finally:
             live.stop()
 
@@ -313,14 +416,11 @@ class CLIChannel(Channel):
         # Render plan content if available
         plan_content = tool_input.get("plan", "") or tool_input.get("content", "")
         if plan_content:
-            if self._render_markdown:
-                self._console.print(Panel(
-                    Markdown(plan_content),
-                    title="Plan Review",
-                    border_style="green",
-                ))
-            else:
-                self._console.print(f"\n--- Plan ---\n{plan_content}\n--- End Plan ---")
+            self._console.print(Panel(
+                Markdown(plan_content),
+                title="Plan Review",
+                border_style="green",
+            ))
         else:
             self._console.print(Panel(
                 "[dim]The agent has prepared a plan for your review.[/dim]",

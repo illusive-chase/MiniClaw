@@ -21,11 +21,18 @@ from claude_agent_sdk import (
     PermissionUpdate,
     ResultMessage,
     SystemMessage,
+    TaskNotificationMessage,
+    TaskProgressMessage,
+    TaskStartedMessage,
     TextBlock,
+    ThinkingBlock,
     ToolPermissionContext,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
 )
 
+from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.interactions import (
     InteractionRequest,
     InteractionResponse,
@@ -381,12 +388,13 @@ class CCAgent:
         model: str | None = None,
         session_id: str | None = None,
         permission_mode: str | None = None,
-    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]] | InteractionRequest | PlanExecuteAction]:
+    ) -> AsyncIterator[str | tuple[str, list[ChatMessage]] | InteractionRequest | PlanExecuteAction | ActivityEvent]:
         """Stream a response.
 
         Yields:
             str — text chunks for progressive display
             InteractionRequest — permission/question/plan-approval requests
+            ActivityEvent — tool/subagent lifecycle events for status display
             tuple[str, list[ChatMessage]] — final sentinel with reply and history
         """
         t0 = time.monotonic()
@@ -399,6 +407,9 @@ class CCAgent:
 
         reply_parts: list[str] = []
         new_session_id: str | None = self._extract_sdk_session_id(history)
+
+        # Pending tool events
+        pending_tools: dict[str, ActivityEvent] = {}
 
         # Set up the output queue for this stream — the can_use_tool callback
         # pushes InteractionRequests here alongside SDK messages.
@@ -441,14 +452,46 @@ class CCAgent:
 
                 # tag == "sdk"
                 message = payload
-                logger.info("Received %s message", type(message).__name__)
 
-                if isinstance(message, SystemMessage):
+                # Check task subclasses BEFORE generic SystemMessage
+                if isinstance(message, TaskStartedMessage):
+                    logger.info("Subagent started: %s (task=%s)", message.task_type, message.task_id)
+                    yield ActivityEvent(
+                        kind=ActivityKind.AGENT,
+                        status=ActivityStatus.START,
+                        id=message.task_id,
+                        name=message.task_type or "agent",
+                        summary=message.description,
+                    )
+
+                elif isinstance(message, TaskProgressMessage):
+                    logger.info("Subagent progress: %s (task=%s)", message.last_tool_name, message.task_id)
+                    yield ActivityEvent(
+                        kind=ActivityKind.AGENT,
+                        status=ActivityStatus.PROGRESS,
+                        id=message.task_id,
+                        name=message.last_tool_name or "",
+                        summary=message.description,
+                    )
+
+                elif isinstance(message, TaskNotificationMessage):
+                    logger.info("Subagent finished: %s (task=%s)", message.status, message.task_id)
+                    yield ActivityEvent(
+                        kind=ActivityKind.AGENT,
+                        status=ActivityStatus.FINISH if message.status == "completed" else ActivityStatus.FAILED,
+                        id=message.task_id,
+                        name="",
+                        summary=message.summary,
+                    )
+
+                elif isinstance(message, SystemMessage):
+                    logger.info("Received SystemMessage[%s]", message.subtype)
                     logger.debug("SystemMessage[%s]: %s", message.subtype, message.data)
                     if message.subtype == "init":
                         new_session_id = message.data.get("session_id")
 
                 elif isinstance(message, AssistantMessage):
+                    logger.info("Received AssistantMessage with %d blocks", len(message.content))
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             text = block.text if block.text.endswith("\n") else block.text + "\n"
@@ -458,8 +501,32 @@ class CCAgent:
                             short_desc = str(block.input)
                             if len(short_desc) > 40:
                                 short_desc = short_desc[:40] + "..."
-                            logger.info("Tool call: %s(%s)", block.name, short_desc)
-                            logger.debug("Tool args: %s(%s)", block.name, block.input)
+                            logger.info("Tool call: %s[id=%s](%s)", block.name, block.id, short_desc)
+                            logger.debug("Tool args: %s[id=%s](%s)", block.name, block.id, block.input)
+                            # Emit tool START event and track as pending
+                            event = ActivityEvent(
+                                kind=ActivityKind.TOOL,
+                                status=ActivityStatus.START,
+                                id=block.id,
+                                name=block.name,
+                                summary=short_desc,
+                            )
+                            pending_tools[block.id] = event
+                            yield event
+                        elif isinstance(block, ThinkingBlock):
+                            logger.debug("Thinking: %s", block.thinking)
+
+                elif isinstance(message, UserMessage) and isinstance(message.content, list):
+                    for block in message.content:
+                        if isinstance(block, ToolResultBlock):
+                            logger.info("Tool call: %s (id=%s)", "succeeded" if not block.is_error else "failed", block.tool_use_id)
+                            pending = pending_tools.pop(block.tool_use_id, None)
+                            if pending is None:
+                                logger.warning("Tool result for unknown call: %s", block.tool_use_id)
+                            else:
+                                pending.status = ActivityStatus.FAILED if block.is_error else ActivityStatus.FINISH
+                                logger.info("Tool call %s: %s", pending.name, pending.status.value)
+                                yield pending
 
                 elif isinstance(message, ResultMessage):
                     elapsed = time.monotonic() - t0

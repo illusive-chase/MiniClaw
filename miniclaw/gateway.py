@@ -8,6 +8,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from miniclaw.activity import ActivityEvent
 from miniclaw.interactions import InteractionRequest, PlanExecuteAction
 from miniclaw.providers.base import ChatMessage
 from miniclaw.session import Session, SessionManager
@@ -53,13 +54,25 @@ class Gateway:
 
     async def run(self) -> None:
         """Start all channels as concurrent async tasks."""
-        tasks = [asyncio.create_task(ch.start(self)) for ch in self._channels]
+        agent_closed = False
+
+        async def _run_channel(ch: Channel) -> None:
+            nonlocal agent_closed
+            try:
+                await ch.start(self)
+            finally:
+                # Close agent clients inside the channel task — the same task
+                # that called __aenter__ on them.  anyio cancel scopes require
+                # exit in the same task that entered them.
+                if not agent_closed and hasattr(self._agent, "aclose"):
+                    agent_closed = True
+                    await self._agent.aclose()
+
+        tasks = [asyncio.create_task(_run_channel(ch)) for ch in self._channels]
         try:
             await asyncio.gather(*tasks)
         finally:
             self._dump_all()
-            if hasattr(self._agent, "aclose"):
-                await self._agent.aclose()
 
     # --- Session lifecycle ---
 
@@ -87,7 +100,7 @@ class Gateway:
 
     async def process_message_stream(
         self, session_id: str, text: str
-    ) -> AsyncIterator[str | InteractionRequest]:
+    ) -> AsyncIterator[str | InteractionRequest | ActivityEvent]:
         """Stream a response. Yields str chunks and InteractionRequests.
 
         Updates session state on completion.
@@ -109,6 +122,8 @@ class Gateway:
                         pending_action = item  # consume — don't yield to channel
                     elif isinstance(item, tuple):  # sentinel: (reply, history)
                         state.history = item[1]
+                    elif isinstance(item, ActivityEvent):
+                        yield item  # pass through to channel
                     elif isinstance(item, InteractionRequest):
                         yield item  # channel handles interaction
                     else:
@@ -133,6 +148,8 @@ class Gateway:
                     ):
                         if isinstance(item, tuple):  # sentinel
                             state.history = item[1]
+                        elif isinstance(item, ActivityEvent):
+                            yield item
                         elif isinstance(item, InteractionRequest):
                             yield item
                         else:
