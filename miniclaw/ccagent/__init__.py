@@ -1,3 +1,3 @@
-from .agent import CCAgent
+from .agent import CCAgent, UsageStats
 
-__all__ = ["CCAgent"]
+__all__ = ["CCAgent", "UsageStats"]

@@ -47,6 +47,35 @@ _SESSION_MARKER = "__cc_session__:"
 
 
 @dataclass
+class UsageStats:
+    """Cumulative token usage and cost for a session."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    total_cost_usd: float = 0.0
+    total_duration_ms: int = 0
+    total_api_duration_ms: int = 0
+    num_turns: int = 0
+    num_requests: int = 0
+
+    def accumulate(self, result: ResultMessage) -> None:
+        """Accumulate stats from a ResultMessage."""
+        if result.total_cost_usd is not None:
+            self.total_cost_usd += result.total_cost_usd
+        self.total_duration_ms += result.duration_ms
+        self.total_api_duration_ms += result.duration_api_ms
+        self.num_turns += result.num_turns
+        self.num_requests += 1
+        if result.usage:
+            self.input_tokens += result.usage.get("input_tokens", 0)
+            self.output_tokens += result.usage.get("output_tokens", 0)
+            self.cache_read_tokens += result.usage.get("cache_read_input_tokens", 0)
+            self.cache_creation_tokens += result.usage.get("cache_creation_input_tokens", 0)
+
+
+@dataclass
 class _ClientEntry:
     """Tracks a live ClaudeSDKClient and the model it was created with."""
 
@@ -84,6 +113,8 @@ class CCAgent:
         self._clients: dict[str, _ClientEntry] = {}
         # Per-client output queues for interaction routing
         self._output_queues: dict[str, asyncio.Queue] = {}
+        # Per-session cumulative usage tracking
+        self._usage: dict[str, UsageStats] = {}
 
     # --- SDK session mapping via history marker ---
 
@@ -350,6 +381,7 @@ class CCAgent:
                 elif isinstance(message, ResultMessage):
                     if message.result:
                         reply_parts.append(message.result)
+                    self._usage.setdefault(session_id or "_default", UsageStats()).accumulate(message)
                     elapsed = time.monotonic() - t0
                     total_chars = sum(len(p) for p in reply_parts)
                     logger.info(
@@ -530,6 +562,7 @@ class CCAgent:
                                 yield pending
 
                 elif isinstance(message, ResultMessage):
+                    self._usage.setdefault(key, UsageStats()).accumulate(message)
                     elapsed = time.monotonic() - t0
                     total_chars = sum(len(p) for p in reply_parts)
                     logger.info(
@@ -559,7 +592,7 @@ class CCAgent:
                 except (asyncio.CancelledError, Exception):
                     pass
 
-        reply = "".join(reply_parts) if reply_parts else "(no response)"
+        reply = "\n".join(reply_parts) if reply_parts else "(no response)"
 
         # Build updated history
         visible_history = [m for m in history if not (m.role == "system" and m.content and m.content.startswith(_SESSION_MARKER))]
@@ -572,6 +605,11 @@ class CCAgent:
         self._last_history = updated_history
         # Final sentinel: tuple signals end of stream with updated state
         yield (reply, updated_history)
+
+    def get_usage(self, session_id: str | None = None) -> UsageStats:
+        """Return cumulative usage stats for a session."""
+        key = session_id or "_default"
+        return self._usage.setdefault(key, UsageStats())
 
     def get_updated_history(self) -> list[ChatMessage] | None:
         """Return the last computed history (fallback for non-sentinel callers)."""

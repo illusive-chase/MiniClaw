@@ -252,6 +252,12 @@ class Gateway:
 
         return await self._with_session_lock(current_id, _do)
 
+    def get_session_usage(self, session_id: str):
+        """Return cumulative usage stats for a session (if agent supports it)."""
+        if hasattr(self._agent, "get_usage"):
+            return self._agent.get_usage(session_id)
+        return None
+
     # --- internal ---
 
     def _dump_all(self) -> None:

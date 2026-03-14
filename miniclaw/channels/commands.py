@@ -232,6 +232,42 @@ class RenameCommand(Command):
         return f"Session renamed to '{args.strip()}'."
 
 
+class CostCommand(Command):
+    def name(self) -> str:
+        return "cost"
+
+    def description(self) -> str:
+        return "Show token usage and cost for this session"
+
+    async def execute(self, args: str, ctx: CommandContext) -> str | None:
+        usage = ctx.gateway.get_session_usage(ctx.session_id)
+        if usage is None:
+            return "Cost tracking is not available for this agent backend."
+        if usage.num_requests == 0:
+            return "No usage recorded yet."
+
+        total_tokens = usage.input_tokens + usage.output_tokens
+        duration_s = usage.total_duration_ms / 1000
+
+        lines = [
+            "[bold]Session cost & usage[/]",
+            f"  Total cost:         ${usage.total_cost_usd:.4f}",
+            f"  Input tokens:       {usage.input_tokens:,}",
+            f"  Output tokens:      {usage.output_tokens:,}",
+        ]
+        if usage.cache_read_tokens:
+            lines.append(f"  Cache read tokens:  {usage.cache_read_tokens:,}")
+        if usage.cache_creation_tokens:
+            lines.append(f"  Cache write tokens: {usage.cache_creation_tokens:,}")
+        lines += [
+            f"  Total tokens:       {total_tokens:,}",
+            f"  Turns:              {usage.num_turns}",
+            f"  Requests:           {usage.num_requests}",
+            f"  Duration:           {duration_s:.1f}s (API: {usage.total_api_duration_ms / 1000:.1f}s)",
+        ]
+        return "\n".join(lines)
+
+
 class ResumeCommand(Command):
     def name(self) -> str:
         return "resume"
@@ -276,6 +312,7 @@ def create_default_registry() -> CommandRegistry:
     registry.register(OutputCommand())
     registry.register(OutputShowLoggingCommand())
     registry.register(ModelCommand())
+    registry.register(CostCommand())
     registry.register(ResetCommand())
     registry.register(SessionsCommand())
     registry.register(RenameCommand())
