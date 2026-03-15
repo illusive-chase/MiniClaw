@@ -17,7 +17,7 @@ from miniclaw.usage import UsageStats
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancellationToken
-from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta
+from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
 
 if TYPE_CHECKING:
     from miniclaw.subagent.executor import SubagentExecutor
@@ -193,6 +193,7 @@ class NativeAgent:
         updated_history.extend(messages[pre_loop_len:])
         updated_history.append(ChatMessage(role="assistant", content=reply))
 
+        yield UsageEvent(usage=self.get_usage())
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:

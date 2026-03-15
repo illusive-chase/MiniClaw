@@ -20,15 +20,14 @@ from miniclaw.activity import (
     ActivityStatus,
     ActivityTracker,
 )
+from miniclaw.channels.base import Channel
 from miniclaw.interactions import (
     InteractionRequest,
     InteractionResponse,
     InteractionType,
 )
 from miniclaw.providers.base import ChatMessage
-
-from miniclaw.channels.base import Channel
-from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta
+from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta, UsageEvent
 
 logger = logging.getLogger(__name__)
 
@@ -163,9 +162,14 @@ class CLIChannel(Channel):
                     live.start()
 
                 elif isinstance(event, TextDelta):
-                    if buffer:
-                        buffer += "\n"
                     buffer += event.text
+                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    live.update(StreamDisplay(panel, footer))
+
+                elif isinstance(event, UsageEvent):
+                    u = event.usage
+                    total = u.input_tokens + u.output_tokens
+                    buffer += f"\n\n> tokens: {total:,} ({u.input_tokens:,} in + {u.output_tokens:,} out)"
                     panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 

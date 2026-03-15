@@ -48,6 +48,7 @@ from miniclaw.types import (
     HistoryUpdate,
     SessionControl,
     TextDelta,
+    UsageEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -280,6 +281,7 @@ class CCAgent:
         if new_session_id:
             updated_history = self._inject_session_marker(updated_history, new_session_id)
 
+        yield UsageEvent(usage=self.get_usage())
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:

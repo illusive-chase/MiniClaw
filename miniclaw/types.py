@@ -8,6 +8,7 @@ from typing import Any, Union
 from miniclaw.activity import ActivityEvent
 from miniclaw.interactions import InteractionRequest
 from miniclaw.providers.base import ChatMessage
+from miniclaw.usage import UsageStats
 
 
 @dataclass
@@ -43,6 +44,13 @@ class InterruptedEvent:
     partial_history: list[ChatMessage] | None = None
 
 
+@dataclass
+class UsageEvent:
+    """Cumulative token usage stats — yielded at the end of each agent response."""
+
+    usage: UsageStats
+
+
 # Union of all event types yielded by agents.
 # Session intercepts HistoryUpdate and SessionControl; the rest reach the Channel.
 AgentEvent = Union[
@@ -52,4 +60,5 @@ AgentEvent = Union[
     HistoryUpdate,
     SessionControl,
     InterruptedEvent,
+    UsageEvent,
 ]

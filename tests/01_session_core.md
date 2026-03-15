@@ -28,12 +28,15 @@ python main.py
 1. Start the CLI agent
 2. Type: `What is 2 + 2?`
 3. Wait for the response
+4. Quit
 
 **Expected Behavior**:
 - An "Assistant" panel renders with progressive markdown output
 - The response contains "4" (or equivalent correct answer)
 - After the response completes, the prompt returns for the next message
 - No errors in the log file (check `.workspace/*.log`)
+- Tokens usage is displayed after the response completes
+- The session is automatically dumped (check `.workspace/.session`)
 
 ---
 

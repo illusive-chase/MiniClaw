@@ -50,7 +50,7 @@ DEFAULT_CONFIG = {
         ),
         "max_tool_iterations": 50,
         "workspace_dir": ".workspace",
-        "tool_deny_list": ['file_edit', 'file_read', 'file_write', 'shell'],
+        "tool_deny_list": ['file_edit', 'file_read', 'file_write', 'shell', 'memory'],
     },
     "memory": {
         "path": "memory.json",

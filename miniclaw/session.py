@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 from os import urandom
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from miniclaw.providers.base import ChatMessage
 
@@ -90,6 +90,7 @@ class Session:
 
         self.primary_channel: Channel | None = None
         self.observers: list[ObserverBinding] = []
+        self.on_history_update: Callable[[], None] | None = None
 
         self._lock = asyncio.Lock()
         self._current_token: CancellationToken | None = None
@@ -123,6 +124,15 @@ class Session:
                         if isinstance(event, HistoryUpdate):
                             self.history = event.history
                             self.metadata.touch()
+                            if self.on_history_update is not None:
+                                try:
+                                    self.on_history_update()
+                                except Exception:
+                                    logger.warning(
+                                        "on_history_update failed (session=%s)",
+                                        self.id,
+                                        exc_info=True,
+                                    )
 
                         elif isinstance(event, SessionControl):
                             if event.action == "plan_execute":

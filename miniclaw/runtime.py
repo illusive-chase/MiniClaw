@@ -92,6 +92,7 @@ class Runtime:
             agent_config=config,
             metadata=metadata or SessionMetadata(),
         )
+        session.on_history_update = lambda _sid=sid: self.persist_session(_sid)
         self.sessions[sid] = session
         return session
 
@@ -133,6 +134,7 @@ class Runtime:
             history=list(source.history),
         )
         self.sessions[forked.id] = forked
+        forked.on_history_update = lambda _sid=forked.id: self.persist_session(_sid)
         logger.info(
             "Forked session %s -> %s (agent=%s)",
             source.id, forked.id, agent_type,
@@ -244,6 +246,7 @@ class Runtime:
             history=history,
         )
         self.sessions[session.id] = session
+        session.on_history_update = lambda _sid=session.id: self.persist_session(_sid)
         logger.info("Restored session %s (%d messages)", session.id, len(history))
         return session
 

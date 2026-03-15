@@ -50,8 +50,8 @@ class CLIListener(Listener):
 
     async def run(self, runtime: Runtime) -> None:
         """Main REPL loop."""
-        console = self._console or Console()
-        channel = CLIChannel(console)
+        channel = CLIChannel(self._console)
+        console = channel._console
 
         # Create session
         session = runtime.create_session(self._agent_type, self._agent_config)
@@ -136,7 +136,6 @@ class CLIListener(Listener):
                 "  /model [name]     Show or change model\n"
                 "  /effort [level]   Show or set thinking effort (low/medium/high)\n"
                 "  /cost             Show usage stats\n"
-                "  /dump             Save current session\n"
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
                 "  /quit, /exit, /q  Exit the REPL",
@@ -248,13 +247,6 @@ class CLIListener(Listener):
                 console.print(f"[dim]{' | '.join(parts)}[/dim]")
             else:
                 console.print("[dim]No usage data available.[/dim]")
-
-        elif cmd == "dump":
-            try:
-                runtime.persist_session(session.id)
-                console.print(f"[dim]Session saved: {session.id}[/dim]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
 
         elif cmd == "rename":
             if not args:
