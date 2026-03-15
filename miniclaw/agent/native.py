@@ -11,6 +11,7 @@ from uuid import uuid4
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancellationToken
+from miniclaw.log import truncate
 from miniclaw.memory.base import Memory
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
@@ -62,6 +63,14 @@ class NativeAgent:
         token: CancellationToken,
     ) -> AsyncIterator[AgentEvent]:
         """Process a message with streaming. Yields AgentEvent items."""
+        t0_total = time.monotonic()
+        logger.info(
+            "[NATIVE] process start: text_len=%d, history_len=%d, model=%s, "
+            "max_iterations=%d",
+            len(text), len(history), config.model or self._default_model,
+            config.max_iterations,
+        )
+
         # Build messages
         messages: list[ChatMessage] = []
         system_parts = [config.system_prompt or self._system_prompt]
@@ -76,10 +85,16 @@ class NativeAgent:
             context = await self._build_context(text)
             if context:
                 system_parts.append(context)
+                logger.debug("[NATIVE] Memory context: %d chars", len(context))
 
         system_text = "\n\n".join(p for p in system_parts if p)
         if system_text:
             messages.append(ChatMessage(role="system", content=system_text))
+
+        logger.debug(
+            "[NATIVE] System prompt: %d parts, %d total chars",
+            len([p for p in system_parts if p]), len(system_text),
+        )
 
         messages.extend(history)
         user_msg = ChatMessage(role="user", content=text)
@@ -87,6 +102,11 @@ class NativeAgent:
 
         # Tool specs
         tool_specs = self._tools.all_specs()
+        logger.debug(
+            "[NATIVE] Tool specs: %d tools (%s)",
+            len(tool_specs) if tool_specs else 0,
+            ", ".join(t.get("function", {}).get("name", "") for t in tool_specs) if tool_specs else "none",
+        )
 
         effective_model = config.model or self._default_model
         max_iterations = config.max_iterations
@@ -134,6 +154,14 @@ class NativeAgent:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._accumulate_usage(response, elapsed_ms)
             turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
+
+            logger.info(
+                "[NATIVE iter=%d] LLM call done: duration_ms=%d, input_tokens=%d, "
+                "output_tokens=%d",
+                iteration, elapsed_ms,
+                response.usage.input_tokens if response.usage else 0,
+                response.usage.output_tokens if response.usage else 0,
+            )
 
             if not response.tool_calls:
                 reply = response.text or ""
@@ -198,6 +226,10 @@ class NativeAgent:
                 )
         else:
             # Max iterations reached
+            logger.warning(
+                "[NATIVE] Max iterations reached (%d) — ending turn",
+                max_iterations,
+            )
             last_text = messages[-1].content if messages else ""
             reply = f"{last_text}\n\n(Warning: reached maximum tool iterations ({max_iterations}))"
 
@@ -206,6 +238,12 @@ class NativeAgent:
         updated_history.append(user_msg)
         updated_history.extend(messages[pre_loop_len:])
         updated_history.append(ChatMessage(role="assistant", content=reply))
+
+        logger.info(
+            "[NATIVE] process end: duration_ms=%d, reply_len=%d, history_len=%d",
+            int((time.monotonic() - t0_total) * 1000),
+            len(reply), len(updated_history),
+        )
 
         yield UsageEvent(usage=turn_usage)
         yield HistoryUpdate(history=updated_history)
@@ -242,6 +280,10 @@ class NativeAgent:
 
     async def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a single tool call."""
+        logger.debug(
+            "[NATIVE] Tool execute: name=%s, args=%s",
+            name, truncate(json.dumps(arguments, ensure_ascii=False)),
+        )
         tool = self._tools.get(name)
         if tool is None:
             result_text = f"Error: unknown tool '{name}'"
@@ -251,6 +293,11 @@ class NativeAgent:
             result_text = result.output
             if not result.success:
                 result_text = f"[FAILED] {result_text}"
+            logger.debug(
+                "[NATIVE] Tool result: name=%s, success=%s, len=%d, preview=%s",
+                name, result.success, len(result_text),
+                truncate(result_text, 200),
+            )
         logger.info("Tool result (%s): %s", name, result_text[:200])
         return result_text
 

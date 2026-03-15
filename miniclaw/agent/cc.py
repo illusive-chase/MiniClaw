@@ -38,6 +38,7 @@ from miniclaw.interactions import (
     InteractionResponse,
     InteractionType,
 )
+from miniclaw.log import truncate
 from miniclaw.providers.base import ChatMessage
 from miniclaw.usage import UsageStats
 
@@ -118,9 +119,15 @@ class CCAgent:
         t0 = time.monotonic()
         key = "_default"
 
+        logger.info(
+            "[CC] process start: text_len=%d, history_len=%d, model=%s",
+            len(text), len(history), config.model or self._default_model,
+        )
+
         client = await self._get_or_create_client(
             history, config.model or self._default_model
         )
+        logger.debug("[CC] Client ready: sdk_session_id=%s", self._sdk_session_id)
 
         reply_parts: list[str] = []
         new_session_id: str | None = self._sdk_session_id
@@ -135,11 +142,14 @@ class CCAgent:
 
         async def _run_sdk() -> None:
             try:
+                logger.debug("[CC] SDK query task started")
                 await client.query(text)
                 async for message in client.receive_response():
                     await output_queue.put(("sdk", message))
                 await output_queue.put(("done", None))
+                logger.debug("[CC] SDK query task completed")
             except Exception as exc:
+                logger.debug("[CC] SDK query task error: %s", exc)
                 await output_queue.put(("error", exc))
 
         task = asyncio.create_task(_run_sdk())
@@ -163,6 +173,7 @@ class CCAgent:
                     raise payload
 
                 if tag == "plan_action":
+                    logger.info("[CC] PlanExecuteAction received")
                     yield SessionControl(
                         action="plan_execute",
                         payload={
@@ -173,6 +184,11 @@ class CCAgent:
                     break
 
                 if tag == "interaction":
+                    logger.info(
+                        "[CC] InteractionRequest: type=%s, tool=%s, id=%s",
+                        payload.type.value if hasattr(payload.type, 'value') else payload.type,
+                        payload.tool_name, payload.id,
+                    )
                     yield payload  # InteractionRequest — channel resolves
                     had_nontext = True
                     continue
@@ -181,6 +197,10 @@ class CCAgent:
                 message = payload
 
                 if isinstance(message, TaskStartedMessage):
+                    logger.debug(
+                        "[CC] TaskStarted: id=%s, type=%s",
+                        message.task_id, message.task_type,
+                    )
                     yield ActivityEvent(
                         kind=ActivityKind.AGENT,
                         status=ActivityStatus.START,
@@ -191,6 +211,10 @@ class CCAgent:
                     had_nontext = True
 
                 elif isinstance(message, TaskProgressMessage):
+                    logger.debug(
+                        "[CC] TaskProgress: id=%s, tool=%s",
+                        message.task_id, message.last_tool_name,
+                    )
                     yield ActivityEvent(
                         kind=ActivityKind.AGENT,
                         status=ActivityStatus.PROGRESS,
@@ -201,6 +225,10 @@ class CCAgent:
                     had_nontext = True
 
                 elif isinstance(message, TaskNotificationMessage):
+                    logger.debug(
+                        "[CC] TaskNotification: id=%s, status=%s",
+                        message.task_id, message.status,
+                    )
                     yield ActivityEvent(
                         kind=ActivityKind.AGENT,
                         status=(
@@ -217,6 +245,7 @@ class CCAgent:
                 elif isinstance(message, SystemMessage):
                     if message.subtype == "init":
                         new_session_id = message.data.get("session_id")
+                        logger.debug("[CC] SystemMessage(init): session_id=%s", new_session_id)
 
                 elif isinstance(message, AssistantMessage):
                     for block in message.content:
@@ -232,6 +261,11 @@ class CCAgent:
                             yield TextDelta(t)
                             text_tail = (text_tail + t)[-2:]
                         elif isinstance(block, ToolUseBlock):
+                            logger.info(
+                                "[CC] ToolUseBlock: name=%s, id=%s, input=%s",
+                                block.name, block.id,
+                                truncate(str(block.input), 200),
+                            )
                             event = ActivityEvent(
                                 kind=ActivityKind.TOOL,
                                 status=ActivityStatus.START,
@@ -248,6 +282,10 @@ class CCAgent:
                 elif isinstance(message, UserMessage) and isinstance(message.content, list):
                     for block in message.content:
                         if isinstance(block, ToolResultBlock):
+                            logger.info(
+                                "[CC] ToolResultBlock: id=%s, is_error=%s",
+                                block.tool_use_id, block.is_error,
+                            )
                             pending = pending_tools.pop(block.tool_use_id, None)
                             if pending is not None:
                                 pending.status = (
@@ -257,8 +295,17 @@ class CCAgent:
                                 had_nontext = True
 
                 elif isinstance(message, ResultMessage):
+                    logger.debug(
+                        "[CC] ResultMessage: usage available",
+                    )
                     self._usage.setdefault(key, UsageStats()).accumulate(message)
                     turn_usage.accumulate(message)
+
+                else:
+                    logger.warning(
+                        "[CC] Unknown SDK message type: %s",
+                        type(message).__name__,
+                    )
 
         except (CLINotFoundError, CLIConnectionError) as exc:
             error_msg = f"Claude Agent SDK error: {exc}"
@@ -298,16 +345,24 @@ class CCAgent:
         if new_session_id:
             updated_history = self._inject_session_marker(updated_history, new_session_id)
 
+        logger.info(
+            "[CC] process end: duration_ms=%d, reply_len=%d, history_len=%d",
+            int((time.monotonic() - t0) * 1000),
+            len(reply), len(updated_history),
+        )
+
         yield UsageEvent(usage=turn_usage)
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:
         """Close SDK client, forcing fresh client on next use."""
+        logger.info("[CC] reset: closing client and clearing session")
         await self._close_client("_default")
         self._sdk_session_id = None
 
     async def shutdown(self) -> None:
         """Close all managed clients."""
+        logger.info("[CC] shutdown: closing %d client(s)", len(self._clients))
         for key in list(self._clients):
             await self._close_client(key)
 
@@ -372,6 +427,11 @@ class CCAgent:
                 itype = InteractionType.PLAN_APPROVAL
             else:
                 itype = InteractionType.PERMISSION
+
+            logger.debug(
+                "[CC] can_use_tool callback: tool=%s, interaction_type=%s",
+                tool_name, itype.value if hasattr(itype, 'value') else itype,
+            )
 
             loop = asyncio.get_running_loop()
             future = loop.create_future()
@@ -475,13 +535,19 @@ class CCAgent:
                 or entry.effort != self._effort
             )
             if config_changed:
+                logger.info("[CC] Config changed — closing old client")
                 await self._close_client(key)
             else:
+                logger.debug("[CC] Reusing existing client")
                 return entry.client
 
         sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
         options = self._build_options(sdk_session_id, model, client_key=key)
 
+        logger.info(
+            "[CC] Creating new client: model=%s, sdk_session=%s, permission_mode=%s",
+            effective_model, sdk_session_id, self._permission_mode,
+        )
         client = ClaudeSDKClient(options=options)
         await client.__aenter__()
         self._clients[key] = _ClientEntry(
@@ -495,5 +561,6 @@ class CCAgent:
         if entry is not None:
             try:
                 await entry.client.__aexit__(None, None, None)
+                logger.debug("[CC] Client closed successfully: key=%s", key)
             except Exception as exc:
                 logger.warning("Error closing client: %s", exc)

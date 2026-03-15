@@ -1,13 +1,18 @@
 """OpenAI-compatible provider (works with OpenAI, Ollama, vLLM, Azure)."""
 
 import json
+import logging
+import time
 from collections.abc import AsyncIterator
 
 from openai import AsyncOpenAI
 
+from miniclaw.log import truncate
 from miniclaw.usage import TokenUsage
 
 from .base import ChatMessage, ChatResponse, Provider, ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(Provider):
@@ -51,8 +56,9 @@ class OpenAIProvider(Provider):
         model: str | None = None,
         temperature: float = 0.7,
     ) -> ChatResponse:
+        effective_model = model or self._model
         kwargs = {
-            "model": model or self._model,
+            "model": effective_model,
             "messages": self._to_api_messages(messages),
             "temperature": temperature,
             "max_tokens": self._max_tokens,
@@ -61,7 +67,18 @@ class OpenAIProvider(Provider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        logger.info(
+            "[PROVIDER] OpenAI chat: model=%s, messages=%d, tools=%d, temperature=%.2f",
+            effective_model, len(messages), len(tools) if tools else 0, temperature,
+        )
+        logger.debug(
+            "[PROVIDER] OpenAI chat details: max_tokens=%d",
+            self._max_tokens,
+        )
+
+        t0 = time.monotonic()
         response = await self._client.chat.completions.create(**kwargs)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         choice = response.choices[0]
         message = choice.message
 
@@ -85,6 +102,19 @@ class OpenAIProvider(Provider):
                 output_tokens=response.usage.completion_tokens or 0,
             )
 
+        logger.info(
+            "[PROVIDER] OpenAI chat done: duration_ms=%d, input_tokens=%d, "
+            "output_tokens=%d, tool_calls=%d",
+            elapsed_ms,
+            usage.input_tokens if usage else 0,
+            usage.output_tokens if usage else 0,
+            len(tool_calls),
+        )
+        logger.debug(
+            "[PROVIDER] OpenAI chat response: text_preview=%s",
+            truncate(message.content or "", 200),
+        )
+
         return ChatResponse(
             text=message.content,
             tool_calls=tool_calls,
@@ -98,8 +128,9 @@ class OpenAIProvider(Provider):
         model: str | None = None,
         temperature: float = 0.7,
     ) -> AsyncIterator[str | ChatResponse]:
+        effective_model = model or self._model
         kwargs = {
-            "model": model or self._model,
+            "model": effective_model,
             "messages": self._to_api_messages(messages),
             "temperature": temperature,
             "stream": True,
@@ -109,11 +140,22 @@ class OpenAIProvider(Provider):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
+        logger.info(
+            "[PROVIDER] OpenAI stream: model=%s, messages=%d, tools=%d",
+            effective_model, len(messages), len(tools) if tools else 0,
+        )
+        logger.debug(
+            "[PROVIDER] OpenAI stream details: max_tokens=%d, temperature=%.2f",
+            self._max_tokens, temperature,
+        )
+
         full_text_parts: list[str] = []
         # Accumulate tool calls by index: {index: {id, name, arg_fragments}}
         pending_tools: dict[int, dict] = {}
         usage: TokenUsage | None = None
+        text_chunks = 0
 
+        t0 = time.monotonic()
         response = await self._client.chat.completions.create(**kwargs)
         async for chunk in response:
             # The final chunk (with stream_options) has usage but empty choices
@@ -129,6 +171,7 @@ class OpenAIProvider(Provider):
             # Text content
             if delta.content:
                 full_text_parts.append(delta.content)
+                text_chunks += 1
                 yield delta.content
 
             # Tool call fragments
@@ -150,6 +193,8 @@ class OpenAIProvider(Provider):
                         if tc_delta.function.arguments:
                             entry["arg_fragments"].append(tc_delta.function.arguments)
 
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
         # Build final tool calls
         tool_calls: list[ToolCall] = []
         for idx in sorted(pending_tools):
@@ -164,6 +209,15 @@ class OpenAIProvider(Provider):
                 name=info["name"],
                 arguments=args,
             ))
+
+        logger.info(
+            "[PROVIDER] OpenAI stream done: duration_ms=%d, input_tokens=%d, "
+            "output_tokens=%d, tool_calls=%d, text_chunks=%d",
+            elapsed_ms,
+            usage.input_tokens if usage else 0,
+            usage.output_tokens if usage else 0,
+            len(tool_calls), text_chunks,
+        )
 
         yield ChatResponse(
             text="".join(full_text_parts) if full_text_parts else None,

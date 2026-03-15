@@ -52,6 +52,7 @@ class SubAgentDriver(Channel):
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Consume agent event stream from child session."""
+        logger.debug("[SUBAGENT %s] send_stream entry", self._session_id)
         text_parts: list[str] = []
 
         async for event in stream:
@@ -59,9 +60,16 @@ class SubAgentDriver(Channel):
                 text_parts.append(event.text)
 
             elif isinstance(event, InteractionRequest):
+                logger.info(
+                    "[SUBAGENT %s] InteractionRequest: type=%s, tool=%s, id=%s",
+                    self._session_id,
+                    event.type.value if hasattr(event.type, 'value') else event.type,
+                    event.tool_name, event.id,
+                )
                 await self._handle_interaction(event)
 
             elif isinstance(event, InterruptedEvent):
+                logger.info("[SUBAGENT %s] InterruptedEvent", self._session_id)
                 self._status = "interrupted"
                 self._notify_parent(
                     "interrupted",
@@ -77,6 +85,10 @@ class SubAgentDriver(Channel):
         full_text = "".join(text_parts)
         if full_text:
             self._result = full_text
+        logger.debug(
+            "[SUBAGENT %s] send_stream end: result_len=%d",
+            self._session_id, len(full_text),
+        )
 
     async def send(self, text: str) -> None:
         """Send a simple text message (not used for sub-agents, but required by Channel)."""
@@ -108,9 +120,17 @@ class SubAgentDriver(Channel):
         """Resolve a pending interaction (called by RuntimeContext)."""
         request = self._pending_interactions.pop(interaction_id, None)
         if request is None:
+            logger.warning(
+                "[SUBAGENT %s] resolve_interaction: not found id=%s",
+                self._session_id, interaction_id,
+            )
             return f"No pending interaction with id '{interaction_id}'"
 
         allow = action.lower() in ("allow", "approve", "yes")
+        logger.info(
+            "[SUBAGENT %s] resolve_interaction: id=%s, action=%s",
+            self._session_id, interaction_id, action,
+        )
 
         updated_input: dict | None = None
         if answers and request.type == InteractionType.ASK_USER:
@@ -160,6 +180,7 @@ class SubAgentDriver(Channel):
 
     def start(self) -> None:
         """Start the background consumer loop."""
+        logger.debug("[SUBAGENT %s] start: background consumer started", self._session_id)
         self._task = asyncio.create_task(self._run())
 
     async def _run(self) -> None:
@@ -169,6 +190,10 @@ class SubAgentDriver(Channel):
                 await self.send_stream(stream)
                 # Notify parent that this turn is done (subagent waiting for next input)
                 if self._result:
+                    logger.debug(
+                        "[SUBAGENT %s] turn_complete: result_len=%d",
+                        self._session_id, len(self._result),
+                    )
                     self._notify_parent(
                         "turn_complete",
                         self._result,
@@ -178,6 +203,7 @@ class SubAgentDriver(Channel):
             # Clean exit — track status internally only
             if self._status == "running":
                 self._status = "completed"
+                logger.info("[SUBAGENT %s] clean exit: completed", self._session_id)
         except asyncio.CancelledError:
             if self._status == "running":
                 self._status = "interrupted"

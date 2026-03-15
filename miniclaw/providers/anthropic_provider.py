@@ -1,13 +1,18 @@
 """Anthropic Claude provider."""
 
 import json
+import logging
+import time
 from collections.abc import AsyncIterator
 
 from anthropic import AsyncAnthropic
 
+from miniclaw.log import truncate
 from miniclaw.usage import TokenUsage
 
 from .base import ChatMessage, ChatResponse, Provider, ToolCall
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider(Provider):
@@ -72,9 +77,10 @@ class AnthropicProvider(Provider):
         temperature: float = 0.7,
     ) -> ChatResponse:
         system, api_msgs = self._to_api_messages(messages)
+        effective_model = model or self._model
 
         kwargs = {
-            "model": model or self._model,
+            "model": effective_model,
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
@@ -84,7 +90,18 @@ class AnthropicProvider(Provider):
         if tools:
             kwargs["tools"] = self._to_api_tools(tools)
 
+        logger.info(
+            "[PROVIDER] Anthropic chat: model=%s, messages=%d, tools=%d, temperature=%.2f",
+            effective_model, len(api_msgs), len(tools) if tools else 0, temperature,
+        )
+        logger.debug(
+            "[PROVIDER] Anthropic chat details: max_tokens=%d, system_len=%d",
+            self._max_tokens, len(system),
+        )
+
+        t0 = time.monotonic()
         response = await self._client.messages.create(**kwargs)
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         text_parts = []
         tool_calls = []
@@ -98,15 +115,29 @@ class AnthropicProvider(Provider):
                     arguments=block.input if isinstance(block.input, dict) else {},
                 ))
 
+        usage = TokenUsage(
+            input_tokens=response.usage.input_tokens,
+            output_tokens=response.usage.output_tokens,
+            cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+            cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
+        )
+
+        logger.info(
+            "[PROVIDER] Anthropic chat done: duration_ms=%d, input_tokens=%d, "
+            "output_tokens=%d, tool_calls=%d",
+            elapsed_ms, usage.input_tokens, usage.output_tokens, len(tool_calls),
+        )
+        logger.debug(
+            "[PROVIDER] Anthropic chat response: text_preview=%s, "
+            "cache_read=%d, cache_creation=%d",
+            truncate("\n".join(text_parts), 200) if text_parts else "(none)",
+            usage.cache_read_tokens, usage.cache_creation_tokens,
+        )
+
         return ChatResponse(
             text="\n".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
-            usage=TokenUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cache_read_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-                cache_creation_tokens=getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-            ),
+            usage=usage,
         )
 
     async def chat_stream(
@@ -117,9 +148,10 @@ class AnthropicProvider(Provider):
         temperature: float = 0.7,
     ) -> AsyncIterator[str | ChatResponse]:
         system, api_msgs = self._to_api_messages(messages)
+        effective_model = model or self._model
 
         kwargs = {
-            "model": model or self._model,
+            "model": effective_model,
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
@@ -129,12 +161,23 @@ class AnthropicProvider(Provider):
         if tools:
             kwargs["tools"] = self._to_api_tools(tools)
 
+        logger.info(
+            "[PROVIDER] Anthropic stream: model=%s, messages=%d, tools=%d",
+            effective_model, len(api_msgs), len(tools) if tools else 0,
+        )
+        logger.debug(
+            "[PROVIDER] Anthropic stream details: max_tokens=%d, temperature=%.2f",
+            self._max_tokens, temperature,
+        )
+
         full_text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         # Track in-progress tool_use blocks: index -> {id, name, json_fragments}
         pending_tools: dict[int, dict] = {}
         block_index = 0
+        text_chunks = 0
 
+        t0 = time.monotonic()
         async with self._client.messages.stream(**kwargs) as stream:
             async for event in stream:
                 if event.type == "content_block_start":
@@ -145,11 +188,16 @@ class AnthropicProvider(Provider):
                             "name": block.name,
                             "json_fragments": [],
                         }
+                        logger.debug(
+                            "[PROVIDER] Anthropic stream tool_use start: name=%s, id=%s",
+                            block.name, block.id,
+                        )
                     block_index = event.index
                 elif event.type == "content_block_delta":
                     delta = event.delta
                     if delta.type == "text_delta":
                         full_text_parts.append(delta.text)
+                        text_chunks += 1
                         yield delta.text
                     elif delta.type == "input_json_delta":
                         idx = event.index
@@ -169,14 +217,27 @@ class AnthropicProvider(Provider):
                             name=info["name"],
                             arguments=args if isinstance(args, dict) else {},
                         ))
+                        logger.debug(
+                            "[PROVIDER] Anthropic stream tool_use complete: name=%s",
+                            info["name"],
+                        )
 
             final_message = await stream.get_final_message()
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
 
         usage = TokenUsage(
             input_tokens=final_message.usage.input_tokens,
             output_tokens=final_message.usage.output_tokens,
             cache_read_tokens=getattr(final_message.usage, "cache_read_input_tokens", 0) or 0,
             cache_creation_tokens=getattr(final_message.usage, "cache_creation_input_tokens", 0) or 0,
+        )
+
+        logger.info(
+            "[PROVIDER] Anthropic stream done: duration_ms=%d, input_tokens=%d, "
+            "output_tokens=%d, tool_calls=%d, text_chunks=%d",
+            elapsed_ms, usage.input_tokens, usage.output_tokens,
+            len(tool_calls), text_chunks,
         )
 
         yield ChatResponse(

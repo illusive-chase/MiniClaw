@@ -40,6 +40,11 @@ class RuntimeContext:
         from miniclaw.agent.config import AgentConfig
         from miniclaw.subagent_driver import SubAgentDriver
 
+        logger.debug(
+            "[RUNTIME] spawn: agent_type=%s, parent_id=%s, task_preview=%.100s",
+            agent_type, self._parent.id, task,
+        )
+
         # Create child session via Runtime
         agent_config = AgentConfig()
         child_session = self._runtime.create_session(agent_type, agent_config)
@@ -85,8 +90,16 @@ class RuntimeContext:
         """
         driver = self._drivers.get(session_id)
         if driver is None:
+            logger.warning(
+                "[RUNTIME] resolve: driver not found for session_id=%s",
+                session_id,
+            )
             return f"No sub-agent session found: {session_id}"
 
+        logger.info(
+            "[RUNTIME] resolve: session_id=%s, interaction_id=%s, action=%s",
+            session_id, interaction_id, action,
+        )
         return driver.resolve_interaction(interaction_id, action, reason, answers)
 
     async def send(self, session_id: str, text: str) -> str:
@@ -96,8 +109,16 @@ class RuntimeContext:
         """
         driver = self._drivers.get(session_id)
         if driver is None:
+            logger.warning(
+                "[RUNTIME] send: driver not found for session_id=%s",
+                session_id,
+            )
             return f"No sub-agent session found: {session_id}"
 
+        logger.debug(
+            "[RUNTIME] send: session_id=%s, text_len=%d",
+            session_id, len(text),
+        )
         child = driver._child_session
         child.submit(text, "user")
         return f"Message sent to sub-agent {session_id}"
@@ -115,6 +136,7 @@ class RuntimeContext:
                     "pending_interactions": pending,
                 }
             )
+        logger.debug("[RUNTIME] list_agents: count=%d", len(results))
         return results
 
     def cancel(self, session_id: str) -> str:
@@ -124,7 +146,12 @@ class RuntimeContext:
         """
         driver = self._drivers.get(session_id)
         if driver is None:
+            logger.warning(
+                "[RUNTIME] cancel: driver not found for session_id=%s",
+                session_id,
+            )
             return f"No sub-agent session found: {session_id}"
 
+        logger.info("[RUNTIME] cancel: session_id=%s", session_id)
         driver._child_session.interrupt()
         return f"Sub-agent {session_id} interrupted"

@@ -107,12 +107,21 @@ class Session:
         self._current_token: CancellationToken | None = None
         self.status: str = "active"  # active | paused | archived
 
+        logger.debug(
+            "[SESSION %s] init: agent_type=%s, status=%s",
+            self.id, agent.agent_type, self.status,
+        )
+
     # --- Core: submit and process ---
 
     def submit(
         self, text: str, source: str = "user", metadata: dict | None = None
     ) -> None:
         """Submit a message to the session's input queue (non-blocking)."""
+        logger.debug(
+            "[SESSION %s] submit: source=%s, queue_size=%d, text_len=%d",
+            self.id, source, self._input_queue.qsize(), len(text),
+        )
         self._input_queue.put_nowait(InputMessage(text, source, metadata))
 
     async def run(self) -> AsyncIterator[tuple[AsyncIterator[AgentEvent], str]]:
@@ -152,6 +161,10 @@ class Session:
         Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
         Consumes internally: HistoryUpdate, SessionControl.
         """
+        logger.info(
+            "[SESSION %s] _process entry: text_len=%d, history_len=%d",
+            self.id, len(text), len(self.history),
+        )
         token = CancellationToken()
         self._current_token = token
         interrupted_text: str | None = None
@@ -174,6 +187,10 @@ class Session:
                         if isinstance(event, HistoryUpdate):
                             self.history = event.history
                             self.metadata.touch()
+                            logger.debug(
+                                "[SESSION %s] HistoryUpdate: new_len=%d",
+                                self.id, len(event.history),
+                            )
                             if self.on_history_update is not None:
                                 try:
                                     self.on_history_update()
@@ -196,6 +213,10 @@ class Session:
                                 restart_text = event.payload.get(
                                     "plan_content", "Execute the plan."
                                 )
+                                logger.info(
+                                    "[SESSION %s] plan_execute restart: text_len=%d",
+                                    self.id, len(restart_text),
+                                )
                                 break
                             else:
                                 logger.warning(
@@ -211,6 +232,7 @@ class Session:
                     pending_text = restart_text
 
         except CancelledError:
+            logger.info("[SESSION %s] Interrupted by user (CancelledError)", self.id)
             # Record the interrupted prompt and a marker so the agent
             # knows what happened on the next turn.
             if interrupted_text is not None:
@@ -277,6 +299,7 @@ class Session:
 
     def interrupt(self) -> None:
         """Cancel the current in-progress processing."""
+        logger.info("[SESSION %s] interrupt requested", self.id)
         if self._current_token is not None:
             self._current_token.cancel()
 
@@ -308,6 +331,10 @@ class Session:
         task = asyncio.create_task(_observer_loop())
         binding = ObserverBinding(channel=channel, queue=queue, task=task)
         self.observers.append(binding)
+        logger.debug(
+            "[SESSION %s] attach_observer: total observers=%d",
+            self.id, len(self.observers),
+        )
         return binding
 
     def detach_observer(self, channel: Channel) -> None:
@@ -325,6 +352,7 @@ class Session:
         """Clear conversation history. Returns number of messages removed."""
         count = len(self.history)
         self.history = []
+        logger.info("[SESSION %s] clear_history: removed %d messages", self.id, count)
         return count
 
     def bind_primary(self, channel: Channel) -> None:
