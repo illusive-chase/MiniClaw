@@ -130,7 +130,7 @@ class AnthropicProvider(Provider):
         logger.debug(
             "[PROVIDER] Anthropic chat response: text_preview=%s, "
             "cache_read=%d, cache_creation=%d",
-            truncate("\n".join(text_parts), 200) if text_parts else "(none)",
+            truncate("\n".join(text_parts)) if text_parts else "(none)",
             usage.cache_read_tokens, usage.cache_creation_tokens,
         )
 

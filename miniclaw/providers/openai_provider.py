@@ -112,7 +112,7 @@ class OpenAIProvider(Provider):
         )
         logger.debug(
             "[PROVIDER] OpenAI chat response: text_preview=%s",
-            truncate(message.content or "", 200),
+            truncate(message.content or ""),
         )
 
         return ChatResponse(

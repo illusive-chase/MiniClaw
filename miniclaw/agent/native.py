@@ -296,9 +296,9 @@ class NativeAgent:
             logger.debug(
                 "[NATIVE] Tool result: name=%s, success=%s, len=%d, preview=%s",
                 name, result.success, len(result_text),
-                truncate(result_text, 200),
+                truncate(result_text),
             )
-        logger.info("Tool result (%s): %s", name, result_text[:200])
+        logger.info("Tool result (%s): %s", name, truncate(result_text))
         return result_text
 
     def _accumulate_usage(self, response: ChatResponse, duration_ms: int = 0) -> None:

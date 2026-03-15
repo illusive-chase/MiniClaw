@@ -33,7 +33,7 @@ def setup_file_logging(file_level: int, workspace_dir: str) -> logging.FileHandl
     return file_handler
 
 
-def truncate(value: str, max_len: int = 500) -> str:
+def truncate(value: str, max_len: int = 4096) -> str:
     """Truncate a string for safe logging, appending total length if clipped."""
     if len(value) <= max_len:
         return value
