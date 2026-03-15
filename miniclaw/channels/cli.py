@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console, ConsoleOptions, RenderResult
@@ -239,8 +240,10 @@ class CLIChannel(Channel):
 
         while True:
             try:
-                self._console.print("\n[bold green]You:[/] ", end="")
-                line = await self._prompt_session.prompt_async("")
+                self._console.print()
+                line = await self._prompt_session.prompt_async(
+                    HTML("<b><ansigreen>You:</ansigreen></b> ")
+                )
                 line = line.strip()
                 if not line:
                     continue
