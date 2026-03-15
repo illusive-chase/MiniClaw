@@ -5,16 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from miniclaw.config import load_config
-from miniclaw.log import setup_file_logging
-from miniclaw.memory import create_memory
-from miniclaw.providers import create_provider
-from miniclaw.persistence import SessionManager
-from miniclaw.tools import create_registry
 from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.native import NativeAgent
+from miniclaw.config import load_config
 from miniclaw.listeners.cli import CLIListener
+from miniclaw.log import setup_file_logging
+from miniclaw.memory import create_memory
+from miniclaw.persistence import SessionManager
+from miniclaw.providers import create_provider
 from miniclaw.runtime import Runtime
+from miniclaw.tools import create_registry
 
 
 def main() -> None:
@@ -39,7 +39,7 @@ def main() -> None:
     agent_config = AgentConfig(
         model=config["provider"].get("model", "gpt-4o"),
         system_prompt=agent_cfg.get("system_prompt", ""),
-        max_iterations=agent_cfg.get("max_tool_iterations", 15),
+        max_iterations=agent_cfg.get("max_tool_iterations", 50),
         temperature=config["provider"].get("temperature", 0.7),
         memory_enabled=True,
     )

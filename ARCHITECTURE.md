@@ -164,26 +164,12 @@ class ObserverBinding:
 
 ### 3.6 Fork
 
-```python
-async def fork(
-    self,
-    new_agent_type: str | None = None,
-    new_config: AgentConfig | None = None,
-) -> Session:
-    """Create a new session with copied history."""
-    source_agent_state = self.agent.serialize_state()
-    forked_agent_state = await self.agent.on_fork(source_agent_state)
+Fork is handled by **Runtime** (§8.2), not by Session, because forking
+requires creating a new agent via the agent registry and registering the
+new session — both of which are Runtime responsibilities. Session does
+not own agent lifecycle (§3.2).
 
-    new_session = Session(
-        id=generate_session_id(),
-        metadata=SessionMetadata(forked_from=self.id),
-        history=list(self.history),                # shallow copy
-        agent_config=new_config or copy(self.agent_config),
-        agent=runtime.create_agent(new_agent_type or self.agent.agent_type),
-    )
-    await new_session.agent.restore_state(forked_agent_state)
-    return new_session
-```
+See `Runtime.fork_session()` in §8.2 for the full implementation.
 
 ### 3.7 Attach / Detach Observer
 
@@ -451,7 +437,6 @@ class Channel(ABC):
 CLIChannel
 ├── _console: Rich Console
 ├── _console_handler: RichHandler (logging)
-├── _prompt_session: prompt_toolkit PromptSession
 │
 ├── send_stream(stream):
 │   ├─ Start Rich Live panel
@@ -473,11 +458,11 @@ CLIChannel
 ├── replay(history):
 │   └─ For each message: render role + content in panel
 │
-├── prompt() -> str:
-│   └─ await prompt_session.prompt_async(">>> ")
-│
 └── on_observe(stream):
     └─ Same as send_stream but interactions displayed as "[auto-allowed]"
+
+Note: User input (prompt) is handled by CLIListener (§7.2), not
+CLIChannel. Channel is an output-only endpoint (Principle #3).
 ```
 
 ### 6.3 FeishuChannel
