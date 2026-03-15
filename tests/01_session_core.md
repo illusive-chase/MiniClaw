@@ -137,3 +137,7 @@ python cc_main.py
 - Sub-agent notifications appear as tool-call/result pairs in the parent session's history
 - The parent agent can react to these notifications (e.g., approve permissions, acknowledge completion)
 - The `_inject_sub_agent_notification()` method appends a `sub_agent_event` tool call and tool result to history
+
+```
+We are going to test subagent functionality. Launch a ccagent to call its AskUserQuestion tool for test and then summarize your choices. You are the main agent, that is able to interact with the subagent and to process subagent's request. Expected behavior: you can successfully (1) launch a ccagent to call its AskUserQuestion; (2) process its request; (3) see its output after it exits; (4) observe that the output is consistent with your choices. Now, let's start.
+```
