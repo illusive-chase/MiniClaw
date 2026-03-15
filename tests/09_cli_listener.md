@@ -1,6 +1,6 @@
 # Test: CLIListener — REPL loop and slash commands
 
-**Feature**: CLIListener runs the interactive REPL loop. It handles user input via prompt_toolkit, routes slash commands, installs SIGINT handler, and connects sessions to CLIChannel.
+**Feature**: CLIListener runs the interactive REPL loop. It handles user input via prompt_toolkit, routes slash commands, installs SIGINT handler, and uses the queue model: `session.submit()` + background `_consume()` task via `session.run()`.
 
 **Architecture Spec**: §7.2 (CLIListener)
 
@@ -25,6 +25,7 @@ python main.py
 - Green "You:" prompt appears
 - Cursor is ready for input
 - Input history file created at `.workspace/.cli_history`
+- A background consumer task is started for `session.run()`
 
 ---
 
@@ -35,8 +36,9 @@ python main.py
 
 **Expected Behavior**:
 - A "Help" panel with cyan border lists all available commands:
-  - /help, /reset, /sessions, /resume, /fork, /attach, /detach, /pipe, /unpipe
-  - /model, /effort, /cost, /dump, /rename, /logging, /quit, /exit, /q
+  - /help, /reset, /sessions, /resume, /fork, /attach, /detach
+  - /model, /effort, /cost, /rename, /logging, /quit, /exit, /q
+- Note: /pipe and /unpipe are NOT listed (removed in favor of SubAgentDriver)
 
 ---
 
@@ -83,16 +85,14 @@ python main.py
 
 ---
 
-## Test 6: /dump and /sessions — save and list
+## Test 6: /sessions — list saved sessions
 
 **Steps**:
-1. Send at least one message
-2. Type `/dump`
-3. Type `/sessions`
+1. Send at least one message (session auto-persists on history update)
+2. Type `/sessions`
 
 **Expected Behavior**:
-- `/dump`: `Session saved: <session_id>`
-- `/sessions`: A "Sessions" panel listing saved sessions with ID, name, and timestamp
+- A "Sessions" panel listing saved sessions with ID, name, and timestamp
 - Sessions sorted by most recent first
 
 ---
@@ -100,7 +100,7 @@ python main.py
 ## Test 7: /resume — restore a saved session
 
 **Steps**:
-1. Build history, use `/dump`
+1. Build conversation history
 2. Note the session ID from `/sessions`
 3. Type `/resume <session_id>`
 
@@ -119,7 +119,7 @@ python main.py
 
 **Expected Behavior**:
 - `Session renamed to: my-debug-session`
-- After `/dump` and `/sessions`, the name appears in the session list
+- After `/sessions`, the name appears in the session list
 
 ---
 
@@ -157,6 +157,7 @@ python main.py
 
 **Expected Behavior**:
 - `Goodbye!` message
+- Background consumer task is cancelled
 - Process exits cleanly
 
 ---
@@ -192,35 +193,17 @@ python main.py
 
 ---
 
-## Test 15: /unpipe — disconnect a pipe
+## Test 15: Queue model — submit and consume
+
+**What this tests**: The CLIListener uses `session.submit()` + background `_consume()` instead of calling `session.process()` directly.
 
 **Steps**:
-1. Create two sessions (fork one): `/fork <session_id>`
-2. Connect via pipe: `/pipe <other_session_id>`
-3. Verify pipe is active
-4. Type `/unpipe <other_session_id>`
+1. Send any message
+2. Observe behavior
 
 **Expected Behavior**:
-- `Pipe disconnected: <session_id> <-> <other_session_id>`
-- Both PipeDrivers shut down
-- No lingering background tasks
-
----
-
-## Test 16: /unpipe without arguments
-
-**Steps**:
-1. Type `/unpipe` (no arguments)
-
-**Expected Behavior**:
-- `Usage: /unpipe <session_id>`
-
----
-
-## Test 17: /unpipe nonexistent pipe
-
-**Steps**:
-1. Type `/unpipe some_invalid_id` (no active pipe to that session)
-
-**Expected Behavior**:
-- Error displayed: `No pipe between <session_id> and some_invalid_id`
+- Message is submitted to the session's input queue via `session.submit(text, "user")`
+- The `_response_done` event clears before submit, and waits until the response completes
+- The background `_consume()` task calls `session.run()`, renders via `channel.send_stream()`
+- From the user's perspective, behavior is identical to direct `process()` calls
+- The prompt re-appears only after the response stream completes

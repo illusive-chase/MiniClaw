@@ -1,8 +1,8 @@
 # Test: Runtime — session lifecycle, agent registry, listener supervision
 
-**Feature**: Runtime is the top-level orchestrator. It manages agent registration, session creation/fork/attach/pipe, listener supervision with exponential backoff, and graceful shutdown.
+**Feature**: Runtime is the top-level orchestrator. It manages agent registration (with per-session factories), two-phase session creation (Session → RuntimeContext → Agent), fork/attach, listener supervision with exponential backoff, and graceful shutdown.
 
-**Architecture Spec**: §8 (Runtime)
+**Architecture Spec**: §8 (Runtime), §8.5 (RuntimeContext)
 
 ---
 
@@ -17,10 +17,10 @@ python main.py
 
 ## Test 1: Agent registration and session creation
 
-**What this tests**: Runtime registers agent factories and creates sessions with the correct agent type.
+**What this tests**: Runtime registers agent factories and creates sessions with the correct agent type using two-phase init.
 
 **Steps**:
-1. Start the application (main.py registers "native", cc_main.py registers "ccagent")
+1. Start the application (main.py registers both "native" and "ccagent" factories)
 2. The REPL starts — a session has been created
 
 **Expected Behavior**:
@@ -28,10 +28,27 @@ python main.py
 - A session is created and bound to the CLIChannel
 - The session's agent matches the registered type
 - Session has a timestamped ID format: `YYYYMMDD_HHMMSS_<6hex>`
+- The session has a `runtime_context` attribute set (RuntimeContext instance)
+- Agent factory received `(config, runtime_context)` — both arguments
 
 ---
 
-## Test 2: Multiple sessions via get_or_create_session
+## Test 2: Two-phase session init
+
+**What this tests**: `create_session()` uses two-phase init: Session with placeholder → RuntimeContext → Agent with context.
+
+**Steps**:
+1. Start the application
+2. The session's agent should have access to session management tools
+
+**Expected Behavior**:
+- The session's RuntimeContext is created with a reference to both the Runtime and the session itself
+- The agent's tool registry includes session management tools (`launch_agent`, `reply_agent`, etc.)
+- These tools have a reference to the RuntimeContext
+
+---
+
+## Test 3: Multiple sessions via get_or_create_session
 
 **What this tests**: Runtime finds existing sessions by sender_id tag, or creates new ones.
 
@@ -42,8 +59,7 @@ python main.py
 4. User B sends a message → new session created with different sender_id
 
 **For CLI testing**:
-1. Use `/dump` to save session
-2. Check `/sessions` — each session has a unique ID
+1. Check `/sessions` — each session has a unique ID
 
 **Expected Behavior**:
 - Sessions are keyed by sender_id tag
@@ -52,7 +68,7 @@ python main.py
 
 ---
 
-## Test 3: Listener supervision — restart on failure
+## Test 4: Listener supervision — restart on failure
 
 **What this tests**: Runtime._supervise() restarts listeners with exponential backoff.
 
@@ -69,7 +85,7 @@ python main.py
 
 ---
 
-## Test 4: Graceful shutdown
+## Test 5: Graceful shutdown
 
 **Steps**:
 1. Start the application
@@ -80,23 +96,20 @@ python main.py
 - Runtime._shutdown() is called:
   1. `_shutting_down` flag set to True
   2. All listeners receive `shutdown()` call
-  3. All active pipes are disconnected (drivers shut down via `driver.shutdown()`)
-  4. All sessions are persisted to disk
-  5. All agents receive `shutdown()` call
+  3. All sessions are persisted to disk
+  4. All agents receive `shutdown()` call
 - Log shows: `Runtime shutting down...` → `Runtime shutdown complete`
 - No data loss — sessions with history are saved
-- No lingering pipe tasks after shutdown
 - Process exits cleanly
 
 ---
 
-## Test 5: Persist and restore session via Runtime
+## Test 6: Persist and restore session via Runtime
 
 **Steps**:
 1. Build conversation history
-2. `/dump` (calls `runtime.persist_session()`)
-3. `/sessions` to see saved sessions
-4. `/resume <id>` (calls `runtime.restore_session()`)
+2. Check `/sessions` to see auto-persisted sessions
+3. `/resume <id>` (calls `runtime.restore_session()`)
 
 **Expected Behavior**:
 - Session serialized to `.workspace/.sessions/<id>.json`
@@ -105,71 +118,58 @@ python main.py
 - `agent_config` contains the full serialized AgentConfig (model, tools, effort, etc.)
 - `agent_state` contains agent-specific state (e.g., `{"sdk_session_id": "..."}` for CCAgent, `{}` for native)
 - `metadata` contains `forked_from` and `tags` (including `sender_id`)
-- Restore creates a new Session with:
-  - Deserialized history
-  - Agent created from persisted `agent_type` (not hardcoded "native")
-  - AgentConfig rebuilt from persisted `agent_config` (not default)
-  - `agent.restore_state()` called with persisted `agent_state`
-  - Full SessionMetadata rebuilt including `forked_from` and `tags`
-- The restored session is added to `runtime.sessions`
+- Restore uses two-phase init: Session → RuntimeContext → Agent
+- Agent's `restore_state()` called with persisted `agent_state`
+- The restored session has a RuntimeContext with session management tools
 - Backward compat: old JSON files without extended fields restore as "native" with default config
 
 ---
 
-## Test 6: Fork session via Runtime
+## Test 7: Fork session via Runtime
 
 **Steps**:
-1. Build history, `/dump`
+1. Build history
 2. `/fork <session_id>`
 
 **Expected Behavior**:
 - Runtime calls `source.agent.serialize_state()` → `source.agent.on_fork()` → new agent, `restore_state()`
+- Fork uses two-phase init: Session → RuntimeContext → Agent
 - New session created with:
   - New unique ID
   - Copied history (shallow copy)
   - `metadata.forked_from = source.id`
+  - Own RuntimeContext instance
 - New session registered in `runtime.sessions`
 - Log: `Forked session <source_id> -> <new_id> (agent=<type>)`
 
 ---
 
-## Test 7: Connect pipe via Runtime
+## Test 8: Per-session agent factory
+
+**What this tests**: Each session gets a fresh agent instance (not a singleton).
 
 **Steps**:
-1. Have two sessions (fork one)
-2. `/pipe <other_session_id>`
+1. Start the application
+2. Fork a session: `/fork <session_id>`
+3. Both sessions should have independent agents
 
 **Expected Behavior**:
-- `create_pipe()` creates linked PipeEnd pair
-- Two PipeDriver tasks started via `asyncio.create_task()`
-- Pipe stored in `runtime._pipes` dict keyed by sorted session IDs
-- Log: `Pipe connected: <id_a> <-> <id_b>`
-- Sessions can communicate through the pipe
+- Each session has its own NativeAgent (or CCAgent) instance
+- Each agent has its own tool registry with its own RuntimeContext
+- Modifying one session's agent config doesn't affect the other
+- Session management tools in each session reference that session's RuntimeContext
 
 ---
 
-## Test 8: Disconnect pipe via Runtime
+## Test 9: RuntimeContext available to tools
+
+**What this tests**: Session management tools are available in the tool registry.
 
 **Steps**:
-1. Have two sessions connected via pipe (use `/pipe`)
-2. Type `/unpipe <other_session_id>`
+1. Start the application
+2. Ask the agent: `What tools do you have available?`
 
 **Expected Behavior**:
-- `Pipe disconnected: <session_id> <-> <other_session_id>`
-- Both PipeDrivers shut down cleanly (POISON_PILL sent to each PipeEnd)
-- Pipe removed from `runtime._pipes` dict
-- PipeDriver tasks exit (no lingering background tasks)
-- Both sessions continue to work normally (no more pipe input)
-- Log: `Pipe disconnected: <id_a> <-> <id_b>`
-
----
-
-## Test 9: Disconnect nonexistent pipe
-
-**Steps**:
-1. Have a session with no active pipes
-2. Type `/unpipe <some_other_session_id>`
-
-**Expected Behavior**:
-- Error displayed: `No pipe between <session_id> and <other_session_id>`
-- No crash
+- The response includes session management tools: `launch_agent`, `reply_agent`, `message_agent`, `check_agents`, `cancel_agent`
+- These tools are in addition to the standard tools (file_read, shell, etc.)
+- The tools are functional — they can spawn sub-agents via RuntimeContext

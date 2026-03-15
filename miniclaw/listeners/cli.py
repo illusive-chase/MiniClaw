@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import signal
 from pathlib import Path
@@ -29,9 +30,9 @@ class CLIListener(Listener):
 
     Handles:
       - User input via prompt_toolkit
-      - Slash commands (/reset, /sessions, /fork, /attach, /pipe, etc.)
+      - Slash commands (/reset, /sessions, /fork, /attach, etc.)
       - SIGINT -> session.interrupt()
-      - Message routing to session.process()
+      - Message routing via session.submit() + background consumer
       - Stream rendering via CLIChannel
     """
 
@@ -57,6 +58,13 @@ class CLIListener(Listener):
         session = runtime.create_session(self._agent_type, self._agent_config)
         session.bind_primary(channel)
         self._session = session
+
+        # Event signaling that the current response is done
+        self._response_done = asyncio.Event()
+        self._response_done.set()  # start in "ready" state
+
+        # Start background consumer
+        consume_task = asyncio.create_task(self._consume(session, channel))
 
         # Setup prompt
         history_path = Path(self._workspace_dir) / ".cli_history"
@@ -98,15 +106,30 @@ class CLIListener(Listener):
                         )
                         continue
 
-                    # Regular message
-                    stream = session.process(line)
-                    await channel.send_stream(stream)
+                    # Regular message: submit to queue and wait for response
+                    self._response_done.clear()
+                    session.submit(line, "user")
+                    await self._response_done.wait()
 
                 except (EOFError, KeyboardInterrupt):
                     console.print("\n[dim]Goodbye![/dim]")
                     break
         finally:
             signal.signal(signal.SIGINT, original_handler)
+            consume_task.cancel()
+            try:
+                await consume_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _consume(self, session: Session, channel: CLIChannel) -> None:
+        """Background task: consume session.run() and render via channel."""
+        try:
+            async for stream, source in session.run():
+                await channel.send_stream(stream)
+                self._response_done.set()
+        except asyncio.CancelledError:
+            pass
 
     async def _handle_command(
         self,
@@ -131,8 +154,6 @@ class CLIListener(Listener):
                 "  /fork <id>        Fork an existing session\n"
                 "  /attach <id>      Attach as observer (read-only)\n"
                 "  /detach           Detach from observed session\n"
-                "  /pipe <id>        Connect current session to another via pipe\n"
-                "  /unpipe <id>      Disconnect pipe to another session\n"
                 "  /model [name]     Show or change model\n"
                 "  /effort [level]   Show or set thinking effort (low/medium/high)\n"
                 "  /cost             Show usage stats\n"
@@ -166,11 +187,9 @@ class CLIListener(Listener):
                 new_session = await runtime.restore_session(args)
                 new_session.bind_primary(channel)
                 self._session = new_session
-                # Replace session reference for the REPL loop
                 # Note: the REPL loop still holds the old `session` variable.
                 # We update self._session for SIGINT, but commands go through
-                # the local var. This is a known limitation — a proper fix
-                # would use a session holder pattern.
+                # the local var. This is a known limitation.
                 await channel.replay(new_session.history)
                 console.print(f"[dim]Resumed session {new_session.id}[/dim]")
             except Exception as e:
@@ -208,26 +227,6 @@ class CLIListener(Listener):
                         console.print(f"[dim]Detached from {sid}[/dim]")
                         return
             console.print("[dim]Not attached to any session.[/dim]")
-
-        elif cmd == "pipe":
-            if not args:
-                console.print("[red]Usage: /pipe <session_id>[/red]")
-                return
-            try:
-                runtime.connect_pipe(session.id, args)
-                console.print(f"[dim]Pipe connected: {session.id} <-> {args}[/dim]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
-
-        elif cmd == "unpipe":
-            if not args:
-                console.print("[red]Usage: /unpipe <session_id>[/red]")
-                return
-            try:
-                await runtime.disconnect_pipe(session.id, args)
-                console.print(f"[dim]Pipe disconnected: {session.id} <-> {args}[/dim]")
-            except Exception as e:
-                console.print(f"[red]Error: {e}[/red]")
 
         elif cmd == "model":
             if args:

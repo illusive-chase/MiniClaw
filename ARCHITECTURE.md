@@ -7,10 +7,11 @@
 | 1 | **Session is the nexus** | Session owns conversation state. Everything else (agent, channel) binds to it. |
 | 2 | **Agent-channel agnosticism** | Agent produces typed events. Channel consumes them. Neither knows about the other. |
 | 3 | **Listener/Channel split** | Listener = input routing. Channel = output rendering. Separate concerns. |
-| 4 | **Pipe-as-Channel** | Inter-session communication uses the same Channel abstraction. No special-case code. |
+| 4 | **SubAgentDriver-as-Channel** | Background sub-agent communication uses the same Channel abstraction. SubAgentDriver acts as Channel for the child and notifier for the parent. |
 | 5 | **Typed event stream** | All agent output flows through `AgentEvent` union. Session intercepts internal events, forwards the rest. |
 | 6 | **Cooperative interrupts** | CancellationToken passed from Session to Agent. Agent checks at defined checkpoints. |
 | 7 | **Extensible via protocol** | New agents, channels, listeners implement protocols and register with Runtime. |
+| 8 | **Input queue model** | Session accepts messages via `submit()` queue, consumed by `run()`. Enables multi-source input (user + sub-agent notifications). |
 
 ---
 
@@ -20,25 +21,26 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                            RUNTIME                                       │
 │                                                                          │
-│  Supervises      ┌──────────────┐   ┌──────────────┐   ┌────────────┐  │
-│  listeners:      │ CLIListener   │   │FeishuListener │   │PipeDriver  │  │
-│                  │ (REPL loop)   │   │(poll + backoff│   │(per pipe)  │  │
-│                  └──────┬───────┘   │ + semaphore)  │   └─────┬──────┘  │
-│                         │           └──────┬────────┘         │         │
-│                         │                  │                  │         │
-│  Routes to      ┌──────▼──────────────────▼──────────────────▼───┐    │
-│  sessions:      │              SESSION REGISTRY                    │    │
-│                 │                                                  │    │
-│                 │  session_A ── agent: native,  ch: CLI            │    │
-│                 │  session_B ── agent: ccagent, ch: Feishu         │    │
-│                 │               observers: [CLI]                   │    │
-│                 │  session_C ── agent: native,  ch: PipeEnd_C     │    │
-│                 │  session_D ── agent: native,  ch: PipeEnd_D     │    │
-│                 │               (C <-> D piped)                    │    │
-│                 └──────────────────────────────────────────────────┘    │
+│  Supervises      ┌──────────────┐   ┌──────────────┐                   │
+│  listeners:      │ CLIListener   │   │FeishuListener │                   │
+│                  │ (REPL loop)   │   │(WebSocket +   │                   │
+│                  │  submit()     │   │ submit())     │                   │
+│                  └──────┬───────┘   └──────┬────────┘                   │
+│                         │                  │                             │
+│  Routes to      ┌──────▼──────────────────▼─────────────────────┐      │
+│  sessions:      │              SESSION REGISTRY                   │      │
+│                 │                                                  │      │
+│                 │  session_A ── agent: native,  ch: CLI            │      │
+│                 │               runtime_context: RuntimeContext_A  │      │
+│                 │  session_B ── agent: ccagent, ch: Feishu         │      │
+│                 │               observers: [CLI]                   │      │
+│                 │  session_C ── agent: ccagent, ch: SubAgentDriver │      │
+│                 │               (background sub-agent of A)        │      │
+│                 └──────────────────────────────────────────────────┘      │
 │                                                                          │
 │  Manages:        session lifecycle (create, fork, attach, persist)       │
-│                  agent registry ("native" -> Agent, "ccagent" -> CCAgent)│
+│                  agent registry ("native" -> factory, "ccagent" -> ...)  │
+│                  two-phase session init (Session → RuntimeContext → Agent)│
 │                  listener supervision (restart with backoff)             │
 │                  graceful shutdown (drain + persist)                     │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -69,6 +71,9 @@ Session
 ├── primary_channel: Channel | None    # who can send input
 ├── observers: list[ObserverBinding]   # read-only watchers
 │
+├── _input_queue: asyncio.Queue[InputMessage]  # push-based input
+├── runtime_context: RuntimeContext | None     # bridge to Runtime for sub-agents
+│
 ├── _lock: asyncio.Lock                # one message at a time
 ├── _current_token: CancellationToken | None
 └── status: ACTIVE | PAUSED | ARCHIVED
@@ -76,20 +81,51 @@ Session
 
 ### 3.2 Ownership Rules
 
-- Session **owns**: `history`, `agent_config`, `metadata`, `status`
-- Session **borrows**: `agent` (bound by Runtime), `primary_channel` (bound by Listener)
+- Session **owns**: `history`, `agent_config`, `metadata`, `status`, `_input_queue`
+- Session **borrows**: `agent` (bound by Runtime), `primary_channel` (bound by Listener), `runtime_context` (set by Runtime)
 - Session **does NOT own**: Channel lifecycle, Agent lifecycle, persistence
 
 This separation enables fork (copy state, rebind to different agent/channel) and attach (add observer channel without touching state).
 
-### 3.3 Core Method: `process()`
+### 3.3 Input Queue Model
+
+Session uses a push-based input queue. Messages are submitted via `submit()` and consumed by `run()`.
 
 ```python
-async def process(self, text: str) -> AsyncIterator[AgentEvent]:
-    """Process user input through the bound agent.
+@dataclass
+class InputMessage:
+    text: str
+    source: str = "user"    # "user" | "sub_agent" | "system"
+    metadata: dict | None = None
 
-    Yields: TextDelta, ActivityEvent, InteractionRequest
-    Consumes internally: HistoryUpdate, SessionControl
+def submit(self, text, source="user", metadata=None) -> None:
+    """Non-blocking enqueue."""
+    self._input_queue.put_nowait(InputMessage(text, source, metadata))
+
+async def run(self) -> AsyncIterator[tuple[AsyncIterator[AgentEvent], str]]:
+    """Continuous loop: pull from queue, yield (stream, source) pairs."""
+    while True:
+        msg = await self._input_queue.get()
+        if msg.source == "sub_agent" and msg.metadata:
+            self._inject_sub_agent_notification(msg.metadata)
+        stream = self._process(msg.text if msg.source != "sub_agent"
+                               else "[System] Sub-agent event received.")
+        yield stream, msg.source
+```
+
+This enables:
+- **Multi-source input**: user messages, sub-agent notifications, and system events all flow through the same queue
+- **Notification injection**: sub-agent events are injected as synthetic tool-call/result pairs in history before processing
+- **Decoupled consumption**: Listeners own the `run()` consumer loop, not Session
+
+### 3.4 Core Method: `_process()`
+
+```python
+async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
+    """Internal: process a single message through the bound agent.
+
+    Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
+    Consumes internally: HistoryUpdate, SessionControl.
     """
     token = CancellationToken()
     self._current_token = token
@@ -129,7 +165,27 @@ async def process(self, text: str) -> AsyncIterator[AgentEvent]:
         self._current_token = None
 ```
 
-### 3.4 Interrupt
+The backward-compat `process()` wrapper delegates to `_process()` directly (bypasses queue).
+
+### 3.5 Sub-Agent Notification Injection
+
+When a sub-agent event arrives, `_inject_sub_agent_notification()` appends a synthetic tool-call/result pair to history:
+
+```python
+def _inject_sub_agent_notification(self, metadata: dict) -> None:
+    call_id = f"sub_agent_event_{len(self.history)}"
+    self.history.append(ChatMessage(
+        role="assistant", content=None,
+        tool_calls=[ToolCall(id=call_id, name="sub_agent_event", arguments=event_data)]
+    ))
+    self.history.append(ChatMessage(
+        role="tool", content=notification_text, tool_call_id=call_id
+    ))
+```
+
+This ensures the agent sees sub-agent events as part of its conversation context and can react accordingly (e.g., calling `reply_agent` to approve a permission).
+
+### 3.6 Interrupt
 
 ```python
 def interrupt(self) -> None:
@@ -140,7 +196,7 @@ def interrupt(self) -> None:
 
 Called by Channel/Listener when user sends Ctrl+C or `/stop`.
 
-### 3.5 Observer Broadcasting
+### 3.7 Observer Broadcasting
 
 ```python
 async def _broadcast(self, event: AgentEvent) -> None:
@@ -162,7 +218,7 @@ class ObserverBinding:
     task: asyncio.Task  # reads queue, calls channel.on_observe()
 ```
 
-### 3.6 Fork
+### 3.8 Fork
 
 Fork is handled by **Runtime** (§8.2), not by Session, because forking
 requires creating a new agent via the agent registry and registering the
@@ -171,7 +227,7 @@ not own agent lifecycle (§3.2).
 
 See `Runtime.fork_session()` in §8.2 for the full implementation.
 
-### 3.7 Attach / Detach Observer
+### 3.9 Attach / Detach Observer
 
 ```python
 def attach_observer(self, channel: Channel) -> None:
@@ -234,7 +290,7 @@ AgentEvent = Union[
 ]
 ```
 
-**Routing in Session.process():**
+**Routing in Session._process():**
 
 | Event | Forwarded to Channel? | Forwarded to Observers? | Session action |
 |-------|----------------------|------------------------|----------------|
@@ -344,6 +400,8 @@ Agent.process(text, history, config, token):
 │   on_fork()        → {}
 │   shutdown()       → no-op
 ```
+
+The tool registry may include session management tools (`launch_agent`, `reply_agent`, etc.) if a `RuntimeContext` was provided during creation.
 
 ### 5.2 CCAgent (SDK-backed)
 
@@ -487,29 +545,58 @@ FeishuChannel(transport, chat_id)
     └─ No-op or send summary card
 ```
 
-### 6.4 PipeEnd
+### 6.4 SubAgentDriver
+
+SubAgentDriver is a dual-role component: Channel for a child session and notifier for a parent session. It lives at `miniclaw/subagent_driver.py` (not in `channels/` to avoid circular imports).
 
 ```
-PipeEnd(name)
-├── _inbox: asyncio.Queue[str]
-├── _other: PipeEnd (linked pair)
+SubAgentDriver(session_id, parent_session, allowed_tools, child_session)
+├── _session_id: str
+├── _parent_session: Session          # receives notifications
+├── _allowed_tools: set[str]          # auto-approved tools
+├── _child_session: Session           # drives this session
+├── _pending_interactions: dict       # interaction_id -> InteractionRequest
+├── _status: str                      # running | completed | failed | interrupted
+├── _result: str | None               # final text output
 │
-├── send_stream(stream):
-│   ├─ Collect all TextDelta chunks → full_text
-│   ├─ InteractionRequests: auto-resolve (no human on a pipe)
-│   └─ self._other._inbox.put(full_text)
+├── send_stream(stream):              # Channel interface
+│   ├─ Collect TextDelta chunks → buffer
+│   ├─ InteractionRequest:
+│   │   ├─ If tool_name in allowed_tools → auto-resolve(allow)
+│   │   └─ Else → store in _pending_interactions, notify parent
+│   ├─ InterruptedEvent → set status=interrupted, notify parent
+│   └─ Capture final text as result
 │
-├── send(text):
-│   └─ self._other._inbox.put(text)
+├── send(text): no-op
 │
-└── listen() -> AsyncIterator[str]:
-    └─ while True: yield await self._inbox.get()
-
-create_pipe(name_a, name_b) -> tuple[PipeEnd, PipeEnd]:
-    a, b = PipeEnd(name_a), PipeEnd(name_b)
-    a._other, b._other = b, a
-    return a, b
+├── _handle_interaction(request):
+│   ├─ Auto-resolve if tool in allowed_tools
+│   └─ Otherwise: store pending, parent.submit(source="sub_agent", metadata=...)
+│
+├── resolve_interaction(id, action, reason):
+│   └─ Pop from _pending, resolve with allow/deny → unblocks child agent
+│
+├── _notify_parent(event_type, text, extra):
+│   └─ parent.submit(text, source="sub_agent", metadata={event_type, ...})
+│
+├── start():
+│   └─ asyncio.create_task(_run())
+│
+├── _run():                           # background loop
+│   ├─ async for stream, source in child_session.run():
+│   │   └─ await self.send_stream(stream)
+│   └─ On completion: set status=completed, notify parent with result
+│
+├── status → str (property)
+├── result → str | None (property)
+└── pending_interaction_ids() → list[str]
 ```
+
+**Key behaviors:**
+- InteractionRequest for tool in `allowed_tools` → auto-resolve (allow)
+- InteractionRequest for other tools → store in `_pending_interactions`, notify parent via `parent.submit(source="sub_agent")`
+- On completion → notify parent with result text
+- `resolve_interaction()` resolves the InteractionRequest's `_future`, unblocking the child agent's `can_use_tool` callback
 
 ---
 
@@ -532,6 +619,8 @@ class Listener(ABC):
 
 ### 7.2 CLIListener
 
+Uses the input queue model: submits messages via `session.submit()` and runs a background consumer task.
+
 ```
 CLIListener.run(runtime):
 │
@@ -539,12 +628,13 @@ CLIListener.run(runtime):
 ├─ cli_channel = CLIChannel(console)
 ├─ session.bind_primary(cli_channel)
 ├─ Register SIGINT → session.interrupt()
+├─ Start background: consume_task = asyncio.create_task(_consume(session, channel))
 │
 ├─ REPL LOOP:
-│   ├─ text = await cli_channel.prompt()
+│   ├─ text = await prompt_session.prompt_async()
 │   │
 │   ├─ if command:
-│   │   ├─ /reset      → session.clear_history()
+│   │   ├─ /reset       → session.clear_history()
 │   │   ├─ /resume <id> → session = runtime.restore_session(id)
 │   │   │                  session.bind_primary(cli_channel)
 │   │   │                  await cli_channel.replay(session.history)
@@ -552,60 +642,48 @@ CLIListener.run(runtime):
 │   │   │                  session.bind_primary(cli_channel)
 │   │   ├─ /attach <id> → runtime.attach_observer(id, cli_channel)
 │   │   ├─ /detach      → runtime.detach_observer(current_observed_id, cli_channel)
-│   │   ├─ /pipe <id>   → runtime.connect_pipe(session.id, id)
-│   │   ├─ /unpipe <id> → runtime.disconnect_pipe(session.id, id)
 │   │   ├─ /sessions    → runtime.list_sessions()
 │   │   ├─ /model [name]→ session.agent_config.model = name
+│   │   ├─ /effort [lvl]→ session.agent_config.effort = level
 │   │   └─ /cost        → session.usage_summary()
 │   │
 │   └─ else (regular message):
-│       ├─ stream = session.process(text)
-│       └─ await cli_channel.send_stream(stream)
+│       ├─ response_done.clear()
+│       ├─ session.submit(text, "user")
+│       └─ await response_done.wait()
+│
+├─ _consume(session, channel):        # background task
+│   └─ async for stream, source in session.run():
+│       ├─ await channel.send_stream(stream)
+│       └─ response_done.set()
+│
+└─ finally: cancel consume_task
 ```
 
 ### 7.3 FeishuListener
 
+Uses the input queue model with per-session background consumers.
+
 ```
 FeishuListener.run(runtime):
 │
-├─ transport = FeishuTransport(app_id, app_secret)
-├─ channels: dict[str, FeishuChannel] = {}  # per-sender
-├─ semaphore = asyncio.Semaphore(4)          # max 4 concurrent
-├─ backoff = ExponentialBackoff(min=2s, max=60s)
+├─ Setup lark_oapi WebSocket client
+├─ latest_channels: dict[str, FeishuChannel]  # per session
+├─ consumer_tasks: dict[str, asyncio.Task]    # per session
 │
-├─ POLL LOOP:
-│   ├─ try:
-│   │   ├─ events = await transport.poll()
-│   │   ├─ backoff.reset()
-│   │   └─ for event in events:
-│   │       ├─ await semaphore.acquire()
-│   │       └─ asyncio.create_task(_handle(event, ...))
-│   └─ except TransportError:
-│       └─ await backoff.wait()   # 2s → 4s → 8s → ... → 60s
-│
-├─ _handle(event, transport, runtime):
-│   ├─ sender = f"feishu:{event.user_id}"
-│   ├─ session = runtime.get_or_create_session(sender, agent_type, config)
-│   ├─ channel = channels.setdefault(sender, FeishuChannel(transport, event.chat_id))
+├─ handle_message(event):
+│   ├─ session = runtime.get_or_create_session(sender_id, type, config)
+│   ├─ channel = FeishuChannel(client, chat_id, reply_to)
 │   ├─ session.bind_primary(channel)
-│   ├─ stream = session.process(event.text)
-│   ├─ await channel.send_stream(stream)
-│   └─ semaphore.release()
-```
-
-### 7.4 PipeDriver
-
-```
-PipeDriver.run(session, pipe_end):
+│   ├─ latest_channels[session.id] = channel
+│   ├─ ensure_consumer(session, get_channel=lambda: latest_channels[sid])
+│   └─ session.submit(text, "user")
 │
-├─ LOOP:
-│   ├─ text = await pipe_end.listen()   # blocks on inbox queue
-│   │
-│   ├─ if text is POISON_PILL:
-│   │   └─ break                        # pipe disconnected
-│   │
-│   ├─ stream = session.process(text)
-│   └─ await pipe_end.send_stream(stream)  # forwards to other end
+├─ _consume(session, get_channel):    # background task per session
+│   └─ async for stream, source in session.run():
+│       └─ await get_channel().send_stream(stream)
+│
+└─ shutdown(): cancel all consumer tasks
 ```
 
 ---
@@ -618,20 +696,30 @@ PipeDriver.run(session, pipe_end):
 class Runtime:
     sessions: dict[str, Session]
     session_manager: SessionManager          # persistence
-    agent_registry: dict[str, Callable]      # "native" -> Agent factory
+    agent_registry: dict[str, Callable]      # "native" -> factory(config, runtime_context)
     listeners: list[Listener]
     _listener_tasks: list[asyncio.Task]
-    _pipes: dict[tuple[str, str], tuple]     # sorted session IDs -> (driver_a, driver_b, task_a, task_b)
     _shutting_down: bool
 ```
 
 ### 8.2 Session Lifecycle
 
 ```python
-# Create
+# Create (two-phase init)
 def create_session(self, agent_type: str, config: AgentConfig) -> Session:
-    agent = self.agent_registry[agent_type](config)
-    session = Session(id=generate_id(), agent=agent, agent_config=config, ...)
+    sid = generate_session_id()
+
+    # Phase 1: Session with placeholder agent
+    session = Session(id=sid, agent=None, agent_config=config, ...)
+
+    # Phase 2: RuntimeContext
+    ctx = RuntimeContext(self, session)
+    session.runtime_context = ctx
+
+    # Phase 3: Agent with RuntimeContext
+    agent = self.create_agent(agent_type, config, runtime_context=ctx)
+    session.agent = agent
+
     self.sessions[session.id] = session
     return session
 
@@ -655,7 +743,13 @@ async def fork_session(
     new_config: AgentConfig | None = None,
 ) -> Session:
     source = self.sessions[source_id]
-    forked = await source.fork(new_agent_type, new_config)
+    # Two-phase init for forked session too
+    forked = Session(id=..., agent=None, ...)
+    ctx = RuntimeContext(self, forked)
+    forked.runtime_context = ctx
+    agent = self.create_agent(agent_type, config, runtime_context=ctx)
+    await agent.restore_state(forked_agent_state)
+    forked.agent = agent
     self.sessions[forked.id] = forked
     return forked
 
@@ -666,26 +760,6 @@ def attach_observer(self, session_id: str, channel: Channel) -> None:
 # Detach observer
 def detach_observer(self, session_id: str, channel: Channel) -> None:
     self.sessions[session_id].detach_observer(channel)
-
-# Connect pipe
-def connect_pipe(self, session_a_id: str, session_b_id: str) -> None:
-    pipe_a, pipe_b = create_pipe(session_a_id, session_b_id)
-    sa, sb = self.sessions[session_a_id], self.sessions[session_b_id]
-
-    driver_a = PipeDriver(sa, pipe_a)
-    driver_b = PipeDriver(sb, pipe_b)
-    task_a = asyncio.create_task(driver_a.run(self))
-    task_b = asyncio.create_task(driver_b.run(self))
-
-    key = tuple(sorted([session_a_id, session_b_id]))
-    self._pipes[key] = (driver_a, driver_b, task_a, task_b)
-
-# Disconnect pipe
-async def disconnect_pipe(self, session_a_id: str, session_b_id: str) -> None:
-    key = tuple(sorted([session_a_id, session_b_id]))
-    driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
-    await driver_a.shutdown()
-    await driver_b.shutdown()
 ```
 
 ### 8.3 Persistence
@@ -712,37 +786,22 @@ def persist_session(self, session_id: str) -> None:
     )
     self.session_manager.save(legacy, session.history)
 
-# Restore session from disk
+# Restore session from disk (two-phase init)
 async def restore_session(self, session_id: str) -> Session:
     loaded = self.session_manager.load_session(session_id)
     history = SessionManager.deserialize_messages(loaded.messages)
-
-    # Use persisted agent_type, fall back to "native" for old files
     agent_type = loaded.agent_type or "native"
     config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
 
-    agent = self.create_agent(agent_type, config)
+    session = Session(id=loaded.id, agent=None, ...)
+    ctx = RuntimeContext(self, session)
+    session.runtime_context = ctx
+
+    agent = self.create_agent(agent_type, config, runtime_context=ctx)
     if loaded.agent_state:
         await agent.restore_state(loaded.agent_state)
+    session.agent = agent
 
-    # Rebuild full metadata, merging backward-compat fields
-    meta_tags = dict(loaded.metadata.get("tags", {})) if loaded.metadata else {}
-    if not meta_tags.get("sender_id"):
-        meta_tags["sender_id"] = loaded.sender_id
-
-    session = Session(
-        id=loaded.id,
-        agent=agent,
-        agent_config=config,
-        metadata=SessionMetadata(
-            created_at=loaded.created_at,
-            updated_at=loaded.updated_at,
-            name=loaded.name,
-            forked_from=loaded.metadata.get("forked_from") if loaded.metadata else None,
-            tags=meta_tags,
-        ),
-        history=history,
-    )
     self.sessions[session.id] = session
     return session
 ```
@@ -778,17 +837,40 @@ async def _supervise(self, listener: Listener) -> None:
             backoff = min(backoff * 2, max_backoff)
 
 async def _shutdown(self) -> None:
-    """Graceful shutdown: stop listeners, disconnect pipes, persist sessions, close agents."""
+    """Graceful shutdown: stop listeners, persist sessions, close agents."""
     self._shutting_down = True
     for listener in self.listeners:
         await listener.shutdown()
-    for key in list(self._pipes):
-        driver_a, driver_b, _, _ = self._pipes.pop(key)
-        await driver_a.shutdown()
-        await driver_b.shutdown()
     for session in self.sessions.values():
         self.persist_session(session.id)
         await session.agent.shutdown()
+```
+
+### 8.5 RuntimeContext
+
+RuntimeContext bridges the tool layer to Runtime for sub-agent session management. Created per-session during two-phase init.
+
+```python
+class RuntimeContext:
+    def __init__(self, runtime, parent_session):
+        self._runtime = runtime
+        self._parent = parent_session
+        self._drivers: dict[str, SubAgentDriver] = {}
+
+    async def spawn(self, agent_type, task, config=None, allowed_tools=None) -> str:
+        """Create child session → SubAgentDriver → submit task → start loop → return session_id."""
+
+    def resolve(self, session_id, interaction_id, action, reason=None) -> str:
+        """Find driver → resolve_interaction() → unblocks child agent."""
+
+    async def send(self, session_id, text) -> str:
+        """Submit follow-up message to child session."""
+
+    def list_agents(self) -> list[dict]:
+        """Return status of all spawned sub-agents."""
+
+    def cancel(self, session_id) -> str:
+        """Interrupt child session via CancellationToken."""
 ```
 
 ---
@@ -811,7 +893,7 @@ self._current_token.cancel()
 Agent's next token.check() raises CancelledError
        │
        ▼
-Session.process() catches CancelledError
+Session._process() catches CancelledError
        │
        ▼
 yield InterruptedEvent(partial_history)
@@ -833,73 +915,85 @@ CancellationToken is cooperative. Checkpoints in the agent:
 
 ---
 
-## 10. Pipe — Full Lifecycle
+## 10. SubAgentDriver — Full Lifecycle
 
-### 10.1 Creation
-
-```
-User: /pipe session_B
-
-Runtime.connect_pipe(session_A.id, session_B.id):
-  pipe_a, pipe_b = create_pipe("A", "B")
-  driver_a = PipeDriver(session_A, pipe_a)
-  driver_b = PipeDriver(session_B, pipe_b)
-  asyncio.create_task(driver_a.run())
-  asyncio.create_task(driver_b.run())
-```
-
-### 10.2 Message Flow
+### 10.1 Spawn
 
 ```
-Session A's agent produces: "Please run the tests"
-  │
-  ▼
-PipeEnd A.send_stream(stream)
-  ├─ Collects TextDelta → "Please run the tests"
-  ├─ Auto-resolves any InteractionRequests
-  └─ pipe_a._other._inbox.put("Please run the tests")
-  │
-  ▼
-PipeEnd B._inbox receives "Please run the tests"
-  │
-  ▼
-PipeDriver B: text = await pipe_b.listen()
-  │
-  ▼
-stream = session_B.process("Please run the tests")
-  │
-  ▼
-Session B's agent executes tools, produces: "Tests passed: 42/42"
-  │
-  ▼
-PipeEnd B.send_stream(stream)
-  └─ pipe_b._other._inbox.put("Tests passed: 42/42")
-  │
-  ▼
-PipeEnd A._inbox receives "Tests passed: 42/42"
-  │
-  ▼
-PipeDriver A: text = await pipe_a.listen()
-  │
-  ▼
-stream = session_A.process("Tests passed: 42/42")
-  └─ Session A's agent processes the result
+Parent agent calls launch_agent tool:
+  → LaunchAgentTool.execute(type="ccagent", task="...", allowed_tools=["Bash", "Read"])
+  → RuntimeContext.spawn():
+      1. runtime.create_session("ccagent", config) → child_session
+      2. SubAgentDriver(session_id, parent, allowed_tools, child_session)
+      3. child_session.bind_primary(driver)
+      4. child_session.submit(task, "user")
+      5. driver.start() → asyncio.create_task(driver._run())
+      6. return child_session.id
 ```
 
-### 10.3 Teardown
+### 10.2 Permission Flow
 
 ```
-User: /unpipe session_B
+Child CCAgent needs to run a tool not in allowed_tools:
+  │
+  ▼
+CCAgent.can_use_tool callback → InteractionRequest
+  │
+  ▼
+SubAgentDriver.send_stream() receives InteractionRequest
+  │
+  ▼
+driver._handle_interaction(request):
+  ├─ tool_name in allowed_tools? → auto-resolve(allow), return
+  └─ else:
+      ├─ _pending_interactions[request.id] = request
+      └─ _notify_parent("permission_required", text, metadata)
+            │
+            ▼
+      parent_session.submit(source="sub_agent", metadata={...})
+            │
+            ▼
+      Parent session._inject_sub_agent_notification(metadata)
+            │
+            ▼
+      Parent agent sees notification in history, calls reply_agent tool
+            │
+            ▼
+      ReplyAgentTool.execute() → RuntimeContext.resolve()
+            │
+            ▼
+      driver.resolve_interaction(id, "allow") → request.resolve(response)
+            │
+            ▼
+      CCAgent.can_use_tool callback unblocks → proceeds with tool
+```
 
-Runtime.disconnect_pipe(session_A.id, session_B.id):
-  key = sorted([session_A.id, session_B.id])
-  driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
-  await driver_a.shutdown()   # sends POISON_PILL, PipeDriver exits loop
-  await driver_b.shutdown()   # sends POISON_PILL, PipeDriver exits loop
+### 10.3 Completion
 
-Runtime tracks active pipes in _pipes: dict[tuple[str, str], (driver_a, driver_b, task_a, task_b)].
-Key is sorted session IDs so lookup is direction-independent.
-Pipes are also torn down during Runtime._shutdown().
+```
+Child session finishes processing (no more items in queue):
+  │
+  ▼
+SubAgentDriver._run() exits the async for loop
+  │
+  ▼
+driver._status = "completed"
+driver._notify_parent("completed", result_text)
+  │
+  ▼
+Parent agent sees completion notification, can use the result
+```
+
+### 10.4 Cancellation
+
+```
+Parent agent calls cancel_agent tool:
+  → CancelAgentTool.execute() → RuntimeContext.cancel()
+  → child_session.interrupt() → CancellationToken.cancel()
+  → Child agent's next token.check() raises CancelledError
+  → Session._process() catches, yields InterruptedEvent
+  → SubAgentDriver.send_stream() receives InterruptedEvent
+  → driver._status = "interrupted", notify parent
 ```
 
 ---
@@ -936,26 +1030,25 @@ Pipes are also torn down during Runtime._shutdown().
 7. To interact: /detach + /fork session_B
 ```
 
-### 11.3 Connect Two Sessions via Pipe
+### 11.3 Feishu Delegates to Background CCAgent
 
 ```
-1. session_A: "orchestrator" agent (plans tasks)
-   session_B: "executor" agent (runs code)
-2. Developer: /pipe session_A session_B
-3. Runtime.connect_pipe(A, B)
-4. Developer sends to session_A: "Run the test suite and fix failures"
-5. Session A's agent:
-   a. Plans approach
-   b. Replies "Running tests" → displayed to CLI
-   c. Via pipe: sends "run pytest and report results" → session_B
-6. Session B's agent:
-   a. Executes shell tool: pytest
-   b. Replies via pipe: "3 failures in test_auth.py"
-7. Session A's agent receives pipe response:
-   a. Continues planning
-   b. Via pipe: sends "fix the 3 failures in test_auth.py"
-8. Session B's agent fixes code
-9. Loop until done
+1. Feishu user sends complex task to session_A (agent: native)
+2. NativeAgent decides to delegate: calls launch_agent tool
+   → type="ccagent", task="Implement feature X", allowed_tools=["Bash", "Read", "Write"]
+3. RuntimeContext.spawn():
+   a. Creates session_C (agent: ccagent)
+   b. Creates SubAgentDriver (channel for C, notifier for A)
+   c. Starts background loop
+4. CCAgent in session_C works autonomously:
+   a. Reads files, writes code — auto-approved (in allowed_tools)
+   b. Needs to run git push — NOT in allowed_tools → permission forwarded to A
+5. Parent session_A receives notification via submit(source="sub_agent")
+   → Agent sees sub_agent_event in history
+   → Calls reply_agent(session_id=C, interaction_id=..., action="allow")
+6. CCAgent in session_C continues, completes task
+7. Parent session_A receives completion notification with result
+8. Developer on CLI: /attach session_C to inspect the background work
 ```
 
 ---
@@ -1012,6 +1105,10 @@ Pipes are also torn down during Runtime._shutdown().
 are kept for old JSON files. New fields (`agent_type`, `agent_config`, `agent_state`,
 `metadata`) use defaults when absent, so old files load without error.
 
+**Sub-agent sessions** are regular sessions in the session registry. They are persisted
+and restored like any other session. The `SubAgentDriver` connection is transient
+(not persisted) — it exists only during the runtime session.
+
 ---
 
 ## 13. Extension Guide
@@ -1035,8 +1132,8 @@ class MyAgent:
     async def restore_state(self, state): pass
     async def on_fork(self, source_state) -> dict: return {}
 
-# Register with runtime
-runtime.register_agent("my_agent", lambda config: MyAgent(config))
+# Register with runtime (factory accepts config and runtime_context)
+runtime.register_agent("my_agent", lambda config, runtime_context=None: MyAgent(config))
 ```
 
 ### Adding a New Channel
@@ -1057,22 +1154,121 @@ class MyChannel(Channel):
         await self._send_text(text)
 ```
 
-### Adding a New Listener
+### Adding a New Listener (Queue Model)
 
 ```python
 class MyListener(Listener):
     async def run(self, runtime):
-        while True:
-            msg = await self._wait_for_input()
-            session = runtime.get_or_create_session(
-                msg.sender_id, "native", self._config
-            )
-            channel = MyChannel(self._transport, msg.chat_id)
-            session.bind_primary(channel)
-            stream = session.process(msg.text)
+        session = runtime.create_session("native", self._config)
+        channel = MyChannel(self._transport)
+        session.bind_primary(channel)
+
+        # Start background consumer
+        consume_task = asyncio.create_task(self._consume(session, channel))
+
+        try:
+            while True:
+                msg = await self._wait_for_input()
+                session.submit(msg.text, "user")
+        finally:
+            consume_task.cancel()
+
+    async def _consume(self, session, channel):
+        async for stream, source in session.run():
             await channel.send_stream(stream)
 
     async def shutdown(self):
         self._transport.close()
 ```
 
+### Spawning Sub-Agents from Tools
+
+Tools that need to spawn sub-agents receive a `RuntimeContext` via `__init__()`:
+
+```python
+class MyDelegationTool(Tool):
+    _manual_registration = True  # skip auto-discovery
+
+    def __init__(self, runtime_context):
+        self._ctx = runtime_context
+
+    async def execute(self, args):
+        # Spawn a background sub-agent
+        session_id = await self._ctx.spawn(
+            agent_type="ccagent",
+            task="Implement feature X",
+            allowed_tools=["Bash", "Read", "Write"],
+        )
+        return ToolResult(output=f"Sub-agent launched: {session_id}")
+```
+
+Register manually in `create_registry()` when `runtime_context` is provided.
+
+---
+
+## 14. Session Management Tools
+
+Five tools provide the agent with sub-agent management capabilities. They are registered in the tool registry only when a `RuntimeContext` is available (i.e., when the agent is created through the standard Runtime flow).
+
+### 14.1 Tool Reference
+
+| Tool | Name | Key Parameters | RuntimeContext Method |
+|------|------|---------------|----------------------|
+| `LaunchAgentTool` | `launch_agent` | type, task, allowed_tools, model | `ctx.spawn()` |
+| `ReplyAgentTool` | `reply_agent` | session_id, interaction_id, action, reason | `ctx.resolve()` |
+| `MessageAgentTool` | `message_agent` | session_id, text | `ctx.send()` |
+| `CheckAgentsTool` | `check_agents` | (none) | `ctx.list_agents()` |
+| `CancelAgentTool` | `cancel_agent` | session_id | `ctx.cancel()` |
+
+### 14.2 Example Flow: Delegated Task
+
+```
+1. User: "Refactor the auth module and update tests"
+
+2. Agent calls launch_agent:
+   {
+     "type": "ccagent",
+     "task": "Refactor src/auth.py: extract middleware, update tests",
+     "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+   }
+   → Returns session_id "20260316_120000_abc123"
+
+3. Agent calls check_agents:
+   → Returns:
+     Session: 20260316_120000_abc123
+     Status: running
+     Pending interactions: (none)
+
+4. Background CCAgent hits a tool not in allowed_tools (e.g., git push):
+   → Agent receives sub_agent_event notification in history
+   → Agent calls reply_agent:
+     {
+       "session_id": "20260316_120000_abc123",
+       "interaction_id": "interaction_456",
+       "action": "deny",
+       "reason": "Don't push yet — wait for review"
+     }
+
+5. Background CCAgent completes:
+   → Agent receives completion notification with result text
+
+6. Agent reports to user: "Auth module refactored. Here's what changed..."
+```
+
+### 14.3 Registry Wiring
+
+Session tools use `_manual_registration = True` to prevent auto-discovery (they require `RuntimeContext` in `__init__`). They are explicitly instantiated in `create_registry()` when `runtime_context` is not None:
+
+```python
+def create_registry(config, memory=None, runtime_context=None):
+    registry = ToolRegistry()
+    # ... auto-discover standard tools ...
+
+    if runtime_context is not None:
+        for cls in (LaunchAgentTool, ReplyAgentTool, MessageAgentTool,
+                    CheckAgentsTool, CancelAgentTool):
+            tool = cls(runtime_context=runtime_context)
+            registry.register(tool)
+
+    return registry
+```

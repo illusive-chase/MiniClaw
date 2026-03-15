@@ -27,18 +27,6 @@ def main() -> None:
     cc_cfg = config.get("ccagent", {})
     workspace_dir = config.get("agent", {}).get("workspace_dir", ".workspace")
 
-    # Create CCAgent
-    cc_agent = CCAgent(
-        system_prompt=cc_cfg.get("system_prompt", ""),
-        default_model=cc_cfg.get("model", "claude-sonnet-4-6"),
-        permission_mode=cc_cfg.get("permission_mode", "default"),
-        allowed_tools=cc_cfg.get("allowed_tools"),
-        cwd=cc_cfg.get("cwd"),
-        max_turns=cc_cfg.get("max_turns"),
-        thinking=cc_cfg.get("thinking"),
-        effort=cc_cfg.get("effort"),
-    )
-
     # Build agent config
     agent_config = AgentConfig(
         model=cc_cfg.get("model", "claude-sonnet-4-6"),
@@ -47,12 +35,45 @@ def main() -> None:
         effort=cc_cfg.get("effort", "medium"),
     )
 
+    # CCAgent factory (per-session)
+    def build_ccagent(cfg, runtime_context=None):
+        return CCAgent(
+            system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
+            default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
+            permission_mode=cc_cfg.get("permission_mode", "default"),
+            allowed_tools=cc_cfg.get("allowed_tools"),
+            cwd=cc_cfg.get("cwd"),
+            max_turns=cc_cfg.get("max_turns"),
+            thinking=cc_cfg.get("thinking"),
+            effort=cc_cfg.get("effort"),
+        )
+
+    # NativeAgent factory (for sub-agents or other use)
+    def build_native_agent(cfg, runtime_context=None):
+        from miniclaw.agent.native import NativeAgent
+        from miniclaw.memory import create_memory
+        from miniclaw.providers import create_provider
+        from miniclaw.tools import create_registry
+
+        provider = create_provider(config["provider"])
+        memory = create_memory(config.get("memory", {}), workspace_dir)
+        registry = create_registry(config, memory, runtime_context=runtime_context)
+        return NativeAgent(
+            provider=provider,
+            tool_registry=registry,
+            memory=memory,
+            system_prompt=cfg.system_prompt or "",
+            default_model=cfg.model or config["provider"].get("model", ""),
+            temperature=cfg.temperature or 0.7,
+        )
+
     # Build runtime
     session_manager = SessionManager(workspace_dir)
     runtime = Runtime(session_manager)
 
-    # Register agent factory
-    runtime.register_agent("ccagent", lambda cfg: cc_agent)
+    # Register agent factories
+    runtime.register_agent("ccagent", build_ccagent)
+    runtime.register_agent("native", build_native_agent)
 
     # Add CLI listener
     cli_listener = CLIListener(

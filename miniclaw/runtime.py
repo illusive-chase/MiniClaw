@@ -1,4 +1,4 @@
-"""Runtime — top-level orchestrator replacing Gateway.
+"""Runtime — top-level orchestrator.
 
 Manages session lifecycle, listener supervision, agent registry,
 persistence, and graceful shutdown.
@@ -7,13 +7,11 @@ persistence, and graceful shutdown.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from copy import deepcopy
-from pathlib import Path
 from typing import Any, Callable
 
-from miniclaw.providers.base import ChatMessage, ToolCall
+from miniclaw.providers.base import ChatMessage
 from miniclaw.persistence import SessionManager
 
 from miniclaw.agent.config import AgentConfig
@@ -26,10 +24,10 @@ logger = logging.getLogger(__name__)
 
 
 class Runtime:
-    """Top-level orchestrator. Replaces Gateway.
+    """Top-level orchestrator.
 
     Responsibilities:
-      - Session lifecycle (create, fork, attach, connect_pipe, persist, restore)
+      - Session lifecycle (create, fork, attach, persist, restore)
       - Agent registry ("native" -> factory, "ccagent" -> factory)
       - Listener supervision (restart with exponential backoff)
       - Graceful shutdown (drain + persist)
@@ -41,10 +39,6 @@ class Runtime:
         self._agent_registry: dict[str, Callable[..., AgentProtocol]] = {}
         self._listeners: list[Listener] = []
         self._listener_tasks: list[asyncio.Task] = []
-        self._pipes: dict[
-            tuple[str, str],
-            tuple[Any, Any, asyncio.Task, asyncio.Task],
-        ] = {}
         self._shutting_down = False
 
     # --- Agent registry ---
@@ -54,11 +48,16 @@ class Runtime:
     ) -> None:
         """Register an agent factory.
 
-        factory signature: (config: AgentConfig) -> AgentProtocol
+        factory signature: (config: AgentConfig, runtime_context: RuntimeContext | None) -> AgentProtocol
         """
         self._agent_registry[agent_type] = factory
 
-    def create_agent(self, agent_type: str, config: AgentConfig | None = None) -> AgentProtocol:
+    def create_agent(
+        self,
+        agent_type: str,
+        config: AgentConfig | None = None,
+        runtime_context: Any = None,
+    ) -> AgentProtocol:
         """Create an agent instance from registry."""
         factory = self._agent_registry.get(agent_type)
         if factory is None:
@@ -66,7 +65,7 @@ class Runtime:
                 f"Unknown agent type '{agent_type}'. "
                 f"Registered: {list(self._agent_registry.keys())}"
             )
-        return factory(config or AgentConfig())
+        return factory(config or AgentConfig(), runtime_context)
 
     # --- Listener management ---
 
@@ -83,15 +82,35 @@ class Runtime:
         session_id: str | None = None,
         metadata: SessionMetadata | None = None,
     ) -> Session:
-        """Create a new session with a fresh agent."""
-        agent = self.create_agent(agent_type, config)
+        """Create a new session with a fresh agent.
+
+        Uses two-phase init:
+          1. Create Session with agent=None placeholder
+          2. Create RuntimeContext for the session
+          3. Create agent with RuntimeContext
+          4. Bind agent to session
+        """
+        from miniclaw.runtime_context import RuntimeContext
+
         sid = session_id or generate_session_id()
+
+        # Phase 1: Create session with a placeholder agent
+        # We use a temporary None and set it below
         session = Session(
             id=sid,
-            agent=agent,
+            agent=None,  # type: ignore[arg-type]
             agent_config=config,
             metadata=metadata or SessionMetadata(),
         )
+
+        # Phase 2: Create RuntimeContext
+        ctx = RuntimeContext(self, session)
+        session.runtime_context = ctx
+
+        # Phase 3: Create agent with RuntimeContext
+        agent = self.create_agent(agent_type, config, runtime_context=ctx)
+        session.agent = agent
+
         session.on_history_update = lambda _sid=sid: self.persist_session(_sid)
         self.sessions[sid] = session
         return session
@@ -117,22 +136,30 @@ class Runtime:
         new_config: AgentConfig | None = None,
     ) -> Session:
         """Fork a session: copy history, optionally switch agent/config."""
+        from miniclaw.runtime_context import RuntimeContext
+
         source = self.sessions[source_id]
         source_agent_state = source.agent.serialize_state()
         forked_agent_state = await source.agent.on_fork(source_agent_state)
 
         config = new_config or deepcopy(source.agent_config)
         agent_type = new_agent_type or source.agent.agent_type
-        agent = self.create_agent(agent_type, config)
-        await agent.restore_state(forked_agent_state)
 
         forked = Session(
             id=generate_session_id(),
-            agent=agent,
+            agent=None,  # type: ignore[arg-type]
             agent_config=config,
             metadata=SessionMetadata(forked_from=source.id),
             history=list(source.history),
         )
+
+        ctx = RuntimeContext(self, forked)
+        forked.runtime_context = ctx
+
+        agent = self.create_agent(agent_type, config, runtime_context=ctx)
+        await agent.restore_state(forked_agent_state)
+        forked.agent = agent
+
         self.sessions[forked.id] = forked
         forked.on_history_update = lambda _sid=forked.id: self.persist_session(_sid)
         logger.info(
@@ -152,34 +179,6 @@ class Runtime:
         session = self.sessions[session_id]
         session.detach_observer(channel)
         logger.info("Observer detached from session %s", session_id)
-
-    def connect_pipe(self, session_a_id: str, session_b_id: str) -> None:
-        """Connect two sessions via a bidirectional pipe."""
-        from miniclaw.channels.pipe import create_pipe
-        from miniclaw.listeners.pipe import PipeDriver
-
-        sa = self.sessions[session_a_id]
-        sb = self.sessions[session_b_id]
-        pipe_a, pipe_b = create_pipe(session_a_id, session_b_id)
-
-        driver_a = PipeDriver(sa, pipe_a)
-        driver_b = PipeDriver(sb, pipe_b)
-        task_a = asyncio.create_task(driver_a.run(self))
-        task_b = asyncio.create_task(driver_b.run(self))
-
-        key = tuple(sorted([session_a_id, session_b_id]))
-        self._pipes[key] = (driver_a, driver_b, task_a, task_b)
-        logger.info("Pipe connected: %s <-> %s", session_a_id, session_b_id)
-
-    async def disconnect_pipe(self, session_a_id: str, session_b_id: str) -> None:
-        """Disconnect a bidirectional pipe between two sessions."""
-        key = tuple(sorted([session_a_id, session_b_id]))
-        if key not in self._pipes:
-            raise ValueError(f"No pipe between {session_a_id} and {session_b_id}")
-        driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
-        await driver_a.shutdown()
-        await driver_b.shutdown()
-        logger.info("Pipe disconnected: %s <-> %s", session_a_id, session_b_id)
 
     # --- Persistence ---
 
@@ -212,6 +211,8 @@ class Runtime:
 
     async def restore_session(self, session_id: str) -> Session:
         """Restore a session from disk."""
+        from miniclaw.runtime_context import RuntimeContext
+
         loaded = self._session_manager.load_session(session_id)
         history = SessionManager.deserialize_messages(loaded.messages)
 
@@ -221,12 +222,6 @@ class Runtime:
         # Rebuild AgentConfig from persisted data, fall back to defaults
         config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
 
-        agent = self.create_agent(agent_type, config)
-
-        # Restore agent-specific state (e.g., CCAgent sdk_session_id)
-        if loaded.agent_state:
-            await agent.restore_state(loaded.agent_state)
-
         # Rebuild full metadata
         meta_tags = dict(loaded.metadata.get("tags", {})) if loaded.metadata else {}
         if not meta_tags.get("sender_id"):
@@ -234,7 +229,7 @@ class Runtime:
 
         session = Session(
             id=loaded.id,
-            agent=agent,
+            agent=None,  # type: ignore[arg-type]
             agent_config=config,
             metadata=SessionMetadata(
                 created_at=loaded.created_at,
@@ -245,6 +240,17 @@ class Runtime:
             ),
             history=history,
         )
+
+        ctx = RuntimeContext(self, session)
+        session.runtime_context = ctx
+
+        agent = self.create_agent(agent_type, config, runtime_context=ctx)
+
+        # Restore agent-specific state (e.g., CCAgent sdk_session_id)
+        if loaded.agent_state:
+            await agent.restore_state(loaded.agent_state)
+
+        session.agent = agent
         self.sessions[session.id] = session
         session.on_history_update = lambda _sid=session.id: self.persist_session(_sid)
         logger.info("Restored session %s (%d messages)", session.id, len(history))
@@ -285,7 +291,7 @@ class Runtime:
                 backoff = min(backoff * 2, max_backoff)
 
     async def _shutdown(self) -> None:
-        """Graceful shutdown: stop listeners, disconnect pipes, persist sessions, close agents."""
+        """Graceful shutdown: stop listeners, persist sessions, close agents."""
         self._shutting_down = True
         logger.info("Runtime shutting down...")
 
@@ -295,15 +301,6 @@ class Runtime:
                 await listener.shutdown()
             except Exception as e:
                 logger.error("Error shutting down listener: %s", e)
-
-        # Disconnect all pipes
-        for key in list(self._pipes):
-            driver_a, driver_b, _, _ = self._pipes.pop(key)
-            try:
-                await driver_a.shutdown()
-                await driver_b.shutdown()
-            except Exception as e:
-                logger.error("Error disconnecting pipe %s: %s", key, e)
 
         # Persist all sessions
         for session_id in list(self.sessions):

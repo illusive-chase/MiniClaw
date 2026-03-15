@@ -8,9 +8,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 from os import urandom
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from miniclaw.providers.base import ChatMessage
+from miniclaw.providers.base import ChatMessage, ToolCall
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancelledError, CancellationToken
@@ -28,6 +28,15 @@ if TYPE_CHECKING:
     from miniclaw.channels.base import Channel
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class InputMessage:
+    """A message submitted to the session input queue."""
+
+    text: str
+    source: str = "user"  # "user" | "sub_agent" | "system"
+    metadata: dict | None = None
 
 
 def generate_session_id() -> str:
@@ -92,14 +101,49 @@ class Session:
         self.observers: list[ObserverBinding] = []
         self.on_history_update: Callable[[], None] | None = None
 
+        self._input_queue: asyncio.Queue[InputMessage] = asyncio.Queue()
+        self.runtime_context: Any = None  # Set by Runtime; avoids circular import
+
         self._lock = asyncio.Lock()
         self._current_token: CancellationToken | None = None
         self.status: str = "active"  # active | paused | archived
 
-    # --- Core: process a message ---
+    # --- Core: submit and process ---
+
+    def submit(
+        self, text: str, source: str = "user", metadata: dict | None = None
+    ) -> None:
+        """Submit a message to the session's input queue (non-blocking)."""
+        self._input_queue.put_nowait(InputMessage(text, source, metadata))
+
+    async def run(self) -> AsyncIterator[tuple[AsyncIterator[AgentEvent], str]]:
+        """Continuous loop: pull from input queue, yield (stream, source) pairs.
+
+        Used by Listeners as the main consumption loop.
+        """
+        while True:
+            msg = await self._input_queue.get()
+            if msg.source == "sub_agent" and msg.metadata:
+                self._inject_sub_agent_notification(msg.metadata)
+            process_text = (
+                msg.text
+                if msg.source != "sub_agent"
+                else "[System] Sub-agent event received. Handle it."
+            )
+            stream = self._process(process_text)
+            yield stream, msg.source
 
     async def process(self, text: str) -> AsyncIterator[AgentEvent]:
-        """Process user input through the bound agent.
+        """Process user input through the bound agent (backward-compat wrapper).
+
+        Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
+        Consumes internally: HistoryUpdate, SessionControl.
+        """
+        async for event in self._process(text):
+            yield event
+
+    async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
+        """Internal: process a single message through the bound agent.
 
         Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
         Consumes internally: HistoryUpdate, SessionControl.
@@ -192,6 +236,39 @@ class Session:
 
         finally:
             self._current_token = None
+
+    # --- Sub-agent notification injection ---
+
+    def _inject_sub_agent_notification(self, metadata: dict) -> None:
+        """Inject a synthetic tool-call/result pair into history for sub-agent events."""
+        notification_text = metadata.get("notification_text", "Sub-agent event occurred.")
+        event_data = {
+            k: v
+            for k, v in metadata.items()
+            if k != "notification_text"
+        }
+
+        call_id = f"sub_agent_event_{len(self.history)}"
+        self.history.append(
+            ChatMessage(
+                role="assistant",
+                content=None,
+                tool_calls=[
+                    ToolCall(
+                        id=call_id,
+                        name="sub_agent_event",
+                        arguments=event_data,
+                    )
+                ],
+            )
+        )
+        self.history.append(
+            ChatMessage(
+                role="tool",
+                content=notification_text,
+                tool_call_id=call_id,
+            )
+        )
 
     # --- Interrupt ---
 

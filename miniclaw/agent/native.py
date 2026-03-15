@@ -6,7 +6,6 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator
-from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
@@ -18,10 +17,6 @@ from miniclaw.usage import UsageStats
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancellationToken
 from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
-
-if TYPE_CHECKING:
-    from miniclaw.subagent.executor import SubagentExecutor
-    from miniclaw.subagent.tracker import ExecutionTracker
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +36,6 @@ class NativeAgent:
         system_prompt: str = "",
         default_model: str = "",
         temperature: float = 0.7,
-        subagent_executor: SubagentExecutor | None = None,
-        execution_tracker: ExecutionTracker | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
@@ -50,8 +43,6 @@ class NativeAgent:
         self._system_prompt = system_prompt
         self._default_model = default_model
         self._temperature = temperature
-        self._subagent_executor = subagent_executor
-        self._execution_tracker = execution_tracker
         self._usage: dict[str, UsageStats] = {}
 
     # --- AgentProtocol ---
@@ -78,8 +69,6 @@ class NativeAgent:
 
         # Add available tool names
         tool_names = self._tools.list_names()
-        if self._subagent_executor is not None:
-            tool_names = tool_names + ["subagent", "threads"]
         if tool_names:
             system_parts.append(f"Available tools: {', '.join(tool_names)}")
 
@@ -99,11 +88,6 @@ class NativeAgent:
 
         # Tool specs
         tool_specs = self._tools.all_specs()
-        if self._subagent_executor is not None:
-            tool_specs = tool_specs + [
-                self._subagent_executor.subagent_spec(),
-                self._subagent_executor.threads_spec(),
-            ]
 
         effective_model = config.model or self._default_model
         max_iterations = config.max_iterations
@@ -229,22 +213,15 @@ class NativeAgent:
 
     async def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a single tool call."""
-        if name == "subagent" and self._subagent_executor is not None:
-            result_text = await self._subagent_executor.run(
-                arguments, self._execution_tracker
-            )
-        elif name == "threads" and self._execution_tracker is not None:
-            result_text = self._execution_tracker.summary()
+        tool = self._tools.get(name)
+        if tool is None:
+            result_text = f"Error: unknown tool '{name}'"
+            logger.warning(result_text)
         else:
-            tool = self._tools.get(name)
-            if tool is None:
-                result_text = f"Error: unknown tool '{name}'"
-                logger.warning(result_text)
-            else:
-                result = await tool.execute(arguments)
-                result_text = result.output
-                if not result.success:
-                    result_text = f"[FAILED] {result_text}"
+            result = await tool.execute(arguments)
+            result_text = result.output
+            if not result.success:
+                result_text = f"[FAILED] {result_text}"
         logger.info("Tool result (%s): %s", name, result_text[:200])
         return result_text
 

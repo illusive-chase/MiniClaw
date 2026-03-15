@@ -13,6 +13,7 @@ from miniclaw.listeners.base import Listener
 
 if TYPE_CHECKING:
     from miniclaw.runtime import Runtime
+    from miniclaw.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ class FeishuListener(Listener):
     """Long-running input source that listens for Feishu messages via WebSocket.
 
     Routes messages to sessions per sender, creating FeishuChannels
-    for each conversation.
+    for each conversation. Uses session.submit() + background consumers.
     """
 
     def __init__(
@@ -38,6 +39,7 @@ class FeishuListener(Listener):
         self._agent_type = agent_type
         self._agent_config = agent_config or AgentConfig()
         self._client = None
+        self._consumer_tasks: dict[str, asyncio.Task] = {}
 
     def _setup_client(self):
         import lark_oapi as lark
@@ -48,12 +50,36 @@ class FeishuListener(Listener):
             .log_level(lark.LogLevel.INFO) \
             .build()
 
+    async def _consume(
+        self, session: Session, get_channel: callable
+    ) -> None:
+        """Background consumer for a session: renders responses via the latest channel."""
+        try:
+            async for stream, source in session.run():
+                channel = get_channel()
+                if channel is not None:
+                    await channel.send_stream(stream)
+        except asyncio.CancelledError:
+            pass
+
+    def _ensure_consumer(self, session: Session, get_channel: callable) -> None:
+        """Ensure a background consumer task exists for this session."""
+        sid = session.id
+        task = self._consumer_tasks.get(sid)
+        if task is None or task.done():
+            self._consumer_tasks[sid] = asyncio.create_task(
+                self._consume(session, get_channel)
+            )
+
     async def run(self, runtime: Runtime) -> None:
         """Start WebSocket connection and listen for messages."""
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
         self._setup_client()
+
+        # Track latest channel per session for response routing
+        latest_channels: dict[str, FeishuChannel] = {}
 
         def handle_message(ctx: lark.Context, event: P2ImMessageReceiveV1) -> None:
             try:
@@ -79,45 +105,30 @@ class FeishuListener(Listener):
                 chat_id = msg.chat_id or ""
                 message_id = msg.message_id or ""
 
-                async def _process():
-                    try:
-                        # Get or create session for this sender
-                        session = runtime.get_or_create_session(
-                            sender_id,
-                            self._agent_type,
-                            self._agent_config,
-                        )
+                # Get or create session for this sender
+                session = runtime.get_or_create_session(
+                    sender_id,
+                    self._agent_type,
+                    self._agent_config,
+                )
 
-                        # Create channel for this conversation
-                        channel = FeishuChannel(
-                            client=self._client,
-                            chat_id=chat_id,
-                            reply_to=message_id,
-                        )
-                        session.bind_primary(channel)
+                # Create channel for this conversation and track it
+                channel = FeishuChannel(
+                    client=self._client,
+                    chat_id=chat_id,
+                    reply_to=message_id,
+                )
+                session.bind_primary(channel)
+                latest_channels[session.id] = channel
 
-                        # Process message
-                        stream = session.process(text.strip())
-                        await channel.send_stream(stream)
+                # Ensure background consumer is running
+                self._ensure_consumer(
+                    session,
+                    lambda _sid=session.id: latest_channels.get(_sid),
+                )
 
-                    except Exception as e:
-                        logger.error("Error processing Feishu message: %s", e, exc_info=True)
-                        try:
-                            error_channel = FeishuChannel(
-                                client=self._client,
-                                chat_id=chat_id,
-                                reply_to=message_id,
-                            )
-                            await error_channel.send(f"Sorry, an error occurred: {e}")
-                        except Exception:
-                            logger.error("Failed to send error reply", exc_info=True)
-
-                # Schedule async processing
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(_process())
-                else:
-                    loop.run_until_complete(_process())
+                # Submit message to session queue
+                session.submit(text.strip(), "user")
 
             except Exception as e:
                 logger.error("Error handling Feishu message: %s", e, exc_info=True)
@@ -140,5 +151,7 @@ class FeishuListener(Listener):
         await loop.run_in_executor(None, ws_client.start)
 
     async def shutdown(self) -> None:
-        """Graceful shutdown — WebSocket client handles its own cleanup."""
-        pass
+        """Graceful shutdown — cancel consumer tasks."""
+        for task in self._consumer_tasks.values():
+            task.cancel()
+        self._consumer_tasks.clear()

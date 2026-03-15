@@ -2,17 +2,16 @@
 
 **Feature**: Sessions support read-only observers via `/attach`. Observers receive a replay of history followed by live event streaming. Observer channels auto-resolve InteractionRequests. `/detach` removes the observer.
 
-**Architecture Spec**: §3.5 (Observer Broadcasting), §3.7 (Attach/Detach), §7.2 (CLIListener /attach, /detach), §11.2 (Attach CLI to Observe)
+**Architecture Spec**: §3.7 (Observer Broadcasting), §3.9 (Attach/Detach), §7.2 (CLIListener /attach, /detach), §11.2 (Attach CLI to Observe)
 
 ---
 
 ## Prerequisites
 
 This test requires two active sessions. You can achieve this by:
-1. Running one session and saving it with `/dump`
+1. Running one session and saving it
 2. Or by using the Feishu listener to create a second session concurrently
-
-For CLI-only testing, use `/dump` and session IDs.
+3. Or by observing a background sub-agent session via `/attach <sub_agent_session_id>`
 
 ```bash
 cd mini-agent
@@ -24,27 +23,27 @@ python main.py
 ## Test 1: Attach as observer
 
 **Steps**:
-1. Start the CLI agent — note the session ID printed or use `/dump` to save
+1. Start the CLI agent — note the session ID
 2. Send a few messages to build history
-3. Use `/dump` to persist the session
-4. Note the session ID (visible in `/sessions`)
-5. The current session has live activity — use `/attach <session_id>` on another session's ID
+3. Check `/sessions` for saved sessions
+4. Use `/attach <session_id>` on another session's ID
 
 **Expected Behavior**:
 - `Attached as observer to <session_id>. Use /detach to leave.` confirmation
 - History replay: past messages from the target session are rendered in the CLI
-- When the observed session receives new messages (from another channel), the observer sees live events
+- When the observed session receives new messages (from another channel or sub-agent), the observer sees live events
 
 ---
 
 ## Test 2: Observer sees live events
 
-**Scenario**: Requires two channels — e.g., Feishu + CLI, or two pipe-connected sessions.
+**Scenario**: Observe a background sub-agent session.
 
-**Alternative manual approach**:
-1. Start CLI, create a session, note its ID
-2. Use `/pipe <other_session_id>` to trigger activity on another session
-3. Use `/attach <other_session_id>` to observe
+**Steps**:
+1. Start CLI, create a session
+2. Ask the agent to launch a background sub-agent (e.g., `Launch a ccagent to read all Python files in this project and summarize them`)
+3. Note the sub-agent's session ID from the tool result
+4. Use `/attach <sub_agent_session_id>` to observe the background session
 
 **Expected Behavior**:
 - TextDelta events render as progressive markdown in the observer

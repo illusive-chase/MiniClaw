@@ -2,7 +2,7 @@
 
 **Feature**: Forking creates a new session with copied history and metadata. The new session can optionally use a different agent type or config. The original session is unaffected.
 
-**Architecture Spec**: §3.6 (Fork), §8.2 (Runtime.fork_session), §11.1 (Fork scenario)
+**Architecture Spec**: §3.8 (Fork), §8.2 (Runtime.fork_session), §11.1 (Fork scenario)
 
 ---
 

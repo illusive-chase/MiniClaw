@@ -40,14 +40,23 @@ def discover_tools(tools_dir: Path) -> list[Tool]:
             module = importlib.import_module(module_name)
             for _, obj in inspect.getmembers(module, inspect.isclass):
                 if issubclass(obj, Tool) and obj is not Tool:
+                    # Skip classes that require manual registration (e.g., session tools)
+                    if getattr(obj, "_manual_registration", False):
+                        continue
                     discovered.append(obj)
         except Exception as e:
             logger.warning("Failed to import %s: %s", module_name, e)
     return discovered
 
 
-def create_registry(config: dict, memory=None) -> ToolRegistry:
-    """Create a tool registry with built-in tools and auto-discovered tools."""
+def create_registry(config: dict, memory=None, runtime_context=None) -> ToolRegistry:
+    """Create a tool registry with built-in tools and auto-discovered tools.
+
+    Args:
+        config: Application config dict.
+        memory: Optional Memory instance for memory-aware tools.
+        runtime_context: Optional RuntimeContext for session management tools.
+    """
     registry = ToolRegistry()
     workspace_dir = config.get("agent", {}).get("workspace_dir", ".workspace")
     deny_set = set(config.get("agent", {}).get("tool_deny_list", []))
@@ -72,5 +81,26 @@ def create_registry(config: dict, memory=None) -> ToolRegistry:
             registry.register(tool)
         except Exception as e:
             logger.warning("Failed to instantiate %s: %s", cls.__name__, e)
+
+    # Register session management tools if runtime_context is available
+    if runtime_context is not None:
+        from miniclaw.tools.session_tools import (
+            CancelAgentTool,
+            CheckAgentsTool,
+            LaunchAgentTool,
+            MessageAgentTool,
+            ReplyAgentTool,
+        )
+
+        for cls in (
+            LaunchAgentTool,
+            ReplyAgentTool,
+            MessageAgentTool,
+            CheckAgentsTool,
+            CancelAgentTool,
+        ):
+            tool = cls(runtime_context=runtime_context)
+            if tool.name() not in deny_set:
+                registry.register(tool)
 
     return registry

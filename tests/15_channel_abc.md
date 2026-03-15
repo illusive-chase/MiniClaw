@@ -22,16 +22,16 @@ cd mini-agent
 ```python
 from miniclaw.channels.cli import CLIChannel
 from miniclaw.channels.feishu import FeishuChannel
-from miniclaw.channels.pipe import PipeEnd
+from miniclaw.subagent_driver import SubAgentDriver
 
 # All must be subclasses of Channel
 from miniclaw.channels.base import Channel
 assert issubclass(CLIChannel, Channel)
 assert issubclass(FeishuChannel, Channel)
-assert issubclass(PipeEnd, Channel)
+assert issubclass(SubAgentDriver, Channel)
 
 # All must implement send_stream and send
-for cls in [CLIChannel, FeishuChannel, PipeEnd]:
+for cls in [CLIChannel, FeishuChannel, SubAgentDriver]:
     assert hasattr(cls, 'send_stream')
     assert hasattr(cls, 'send')
     assert hasattr(cls, 'on_observe')
@@ -50,9 +50,8 @@ for cls in [CLIChannel, FeishuChannel, PipeEnd]:
 
 **Steps** (observable via /attach):
 1. Start CLI, create session A
-2. `/dump` session A
-3. Start a second session, `/attach <session_A_id>`
-4. From another channel, send a message to session A that triggers an InteractionRequest
+2. Start a second session, `/attach <session_A_id>`
+3. From another channel, send a message to session A that triggers an InteractionRequest
 
 **Expected Behavior**:
 - The primary channel (session A's) gets the InteractionRequest as a prompt
@@ -67,16 +66,15 @@ for cls in [CLIChannel, FeishuChannel, PipeEnd]:
 
 **CLIChannel**: Renders user messages as text, assistant messages in panels
 **FeishuChannel**: No-op (returns immediately)
-**PipeEnd**: No replay (not applicable for pipes)
+**SubAgentDriver**: No replay (sub-agent channels don't replay history)
 
 **Steps**:
 1. Build history
-2. `/dump`, then `/resume <id>`
+2. `/resume <id>`
 
 **Expected Behavior**:
 - CLIChannel shows full history replay
 - FeishuChannel silently skips replay
-- PipeEnd has no replay concept
 
 ---
 

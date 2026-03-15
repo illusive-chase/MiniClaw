@@ -1,8 +1,8 @@
-# Test: Pipe System — PipeEnd & PipeDriver bidirectional communication
+# Test: SubAgentDriver — background sub-agent lifecycle
 
-**Feature**: Pipes connect two sessions for bidirectional agent-to-agent communication. PipeEnd is a Channel implementation with linked inbox queues. PipeDriver reads from the pipe and feeds messages to the session.
+**Feature**: SubAgentDriver is a dual-role component: Channel for a child session and notifier for a parent session. It auto-resolves InteractionRequests for allowed tools, forwards others to the parent session for approval, and notifies the parent on completion/failure/interruption.
 
-**Architecture Spec**: §6.4 (PipeEnd), §7.4 (PipeDriver), §10 (Pipe Full Lifecycle)
+**Architecture Spec**: §6.4 (SubAgentDriver), §8.5 (RuntimeContext), §10 (SubAgentDriver Lifecycle), §14 (Session Management Tools)
 
 ---
 
@@ -13,119 +13,182 @@ cd mini-agent
 python main.py
 ```
 
-You need two sessions to test pipes. Create one, dump it, then use `/pipe`.
+Ensure both "native" and "ccagent" agent types are registered. `main.py` registers both by default.
 
 ---
 
-## Test 1: Create a pipe between two sessions
+## Test 1: Launch a background sub-agent
 
 **Steps**:
-1. Start the CLI agent — this creates session A
-2. Send a message to establish context: `You are a project planner. When you receive test results, analyze them.`
-3. `/dump` session A
-4. Note session A's ID from `/sessions`
-5. Create a second session by forking: `/fork <session_A_id>` — this creates session B
-6. Note session B's ID
-7. Type `/pipe <session_A_id>` (connects current session B to session A)
+1. Start the CLI agent
+2. Ask the agent to delegate a task: `Launch a background ccagent to read the file config.yaml and summarize its contents`
+3. The agent should call the `launch_agent` tool
 
 **Expected Behavior**:
-- `Pipe connected: <session_B_id> <-> <session_A_id>`
-- Two PipeDriver tasks are spawned in the background
-- Both sessions can now exchange messages through the pipe
+- The `launch_agent` tool call appears in the activity footer
+- Tool result includes the new session ID (e.g., `Sub-agent launched successfully. Session ID: 20260316_120000_abc123`)
+- A background sub-agent session is created and starts processing
+- The parent agent receives a response and can continue interacting with the user
 
 ---
 
-## Test 2: Message flow through pipe
-
-**What this tests**: The full message flow as described in §10.2.
-
-**Scenario**: After connecting sessions via pipe:
-1. Session A's agent produces text → collected by PipeEnd A → pushed to PipeEnd B's inbox
-2. PipeDriver B reads from inbox → feeds to session B via `session.process()`
-3. Session B's agent responds → collected by PipeEnd B → pushed to PipeEnd A's inbox
-4. PipeDriver A reads → feeds to session A
+## Test 2: Sub-agent completes and notifies parent
 
 **Steps**:
-1. After pipe connection, send a message to one session
-2. Watch for activity indicating the piped session is processing
+1. Launch a sub-agent with a simple task (from Test 1)
+2. Wait for the sub-agent to complete
 
 **Expected Behavior**:
-- Messages flow bidirectionally
-- Each session processes incoming pipe messages through its agent
-- InteractionRequests on pipes are auto-resolved (no human on a pipe)
+- When the sub-agent finishes, the parent session receives a notification
+- The notification is injected as a synthetic `sub_agent_event` tool call/result pair in parent's history
+- The parent agent processes the notification and can report the result to the user
+- The SubAgentDriver's status changes to "completed"
 
 ---
 
-## Test 3: PipeEnd auto-resolves interactions
-
-**What this tests**: PipeEnd.send_stream() auto-resolves all InteractionRequests since there's no human on a pipe endpoint.
+## Test 3: Check sub-agent status
 
 **Steps**:
-1. Connect two sessions via pipe
-2. One session triggers an action that would normally require permission
+1. Launch a sub-agent
+2. Ask the agent: `Check the status of running sub-agents`
+3. The agent should call the `check_agents` tool
 
 **Expected Behavior**:
-- Permission is auto-granted
-- No blocking prompt on the pipe
-- Processing continues automatically
+- Tool result lists all sub-agents with:
+  - Session ID
+  - Status (running / completed / failed / interrupted)
+  - Result preview (for completed agents)
+  - Pending interactions (if any)
 
 ---
 
-## Test 4: Disconnect pipe via /unpipe
+## Test 4: Sub-agent permission forwarding
 
-**What this tests**: `Runtime.disconnect_pipe()` tears down a pipe by calling `shutdown()` on both PipeDrivers, which sends POISON_PILL to terminate each driver's loop.
+**What this tests**: When a sub-agent needs a tool not in `allowed_tools`, the permission request is forwarded to the parent.
 
 **Steps**:
-1. Connect two sessions via pipe: `/pipe <session_B_id>`
-2. Verify the pipe is active (messages flow between sessions)
-3. Type `/unpipe <session_B_id>`
+1. Launch a sub-agent with limited allowed_tools: `Launch a ccagent to create a test file. Only allow Read and Glob tools.`
+2. The sub-agent will need to use Write (not in allowed_tools)
+3. The parent session receives a permission notification
 
 **Expected Behavior**:
-- `Pipe disconnected: <session_A_id> <-> <session_B_id>`
-- Both PipeDrivers exit their loops cleanly
-- Pipe removed from `runtime._pipes` tracking dict
-- No error or crash
-- The disconnected sessions return to normal (no more pipe input)
-- Log: `Pipe <name> disconnected` for each PipeDriver
+- Sub-agent's InteractionRequest for "Write" tool is NOT auto-resolved (not in allowed_tools)
+- The request is stored in `_pending_interactions`
+- Parent session receives a `sub_agent_event` notification with:
+  - `event_type: "permission_required"`
+  - `session_id`, `interaction_id`, `tool_name`, `tool_input`
+- The parent agent sees the notification and can call `reply_agent` to approve/deny
 
 ---
 
-## Test 5: POISON_PILL direct disconnect
-
-**What this tests**: PipeEnd.disconnect() sends POISON_PILL directly (low-level mechanism used by PipeDriver.shutdown()).
+## Test 5: Reply to sub-agent permission request
 
 **Steps**:
-1. Connect two sessions via pipe
-2. Observe that the pipe is active
-3. (Programmatic test) Call `pipe_end.disconnect()` on one end
+1. From Test 4, a permission request is pending
+2. Ask the agent: `Allow the sub-agent to use the Write tool`
+3. The agent should call `reply_agent` with `action: "allow"`
 
 **Expected Behavior**:
-- POISON_PILL is placed in the inbox
-- PipeDriver's `listen()` returns None
-- PipeDriver exits its loop cleanly
-- No error or crash
+- The `reply_agent` tool resolves the pending InteractionRequest
+- The sub-agent's `can_use_tool` callback unblocks
+- The sub-agent continues processing with the allowed tool
+- Tool result: `Interaction <id> resolved: allowed`
 
 ---
 
-## Test 6: Pipe with different agent types
-
-**Scenario**: Connect a NativeAgent session with a CCAgent session.
+## Test 6: Deny sub-agent permission
 
 **Steps**:
-1. Start with `python main.py` (NativeAgent)
-2. Register a CCAgent session (requires both agent types registered)
-3. Connect via pipe
+1. When a permission request is pending
+2. Ask the agent: `Deny the sub-agent's request to use that tool`
+3. The agent calls `reply_agent` with `action: "deny"` and a reason
 
 **Expected Behavior**:
-- Both agents communicate through the pipe
-- Each processes messages according to its own capabilities
-- The pipe abstraction is agent-agnostic — only text flows through
+- The InteractionRequest is resolved with `allow=False`
+- The sub-agent receives the denial and adjusts its approach
+- Tool result: `Interaction <id> resolved: denied`
+
+---
+
+## Test 7: Auto-resolve allowed tools
+
+**What this tests**: Tools in the `allowed_tools` list are auto-approved without forwarding to parent.
+
+**Steps**:
+1. Launch a sub-agent with specific allowed tools: `Launch a ccagent to read all Python files. Allow Bash, Read, Glob, and Grep tools.`
+2. The sub-agent uses Bash, Read, Glob, Grep during its work
+
+**Expected Behavior**:
+- No permission requests forwarded to parent for allowed tools
+- The parent does NOT receive `permission_required` notifications for these tools
+- The sub-agent works autonomously using only the allowed tools
+- Log shows: `Auto-resolved interaction <id> (tool=<name>, allowed)`
+
+---
+
+## Test 8: Send follow-up message to sub-agent
+
+**Steps**:
+1. Launch a sub-agent
+2. While it's running, ask the agent: `Send a message to the sub-agent telling it to also check for TODO comments`
+3. The agent should call `message_agent` with the session ID and text
+
+**Expected Behavior**:
+- The message is submitted to the sub-agent's input queue via `session.submit(text, "user")`
+- The sub-agent processes the follow-up message after its current work
+- Tool result: `Message sent to sub-agent <session_id>`
+
+---
+
+## Test 9: Cancel a running sub-agent
+
+**Steps**:
+1. Launch a sub-agent with a long-running task
+2. Ask the agent: `Cancel the background sub-agent`
+3. The agent should call `cancel_agent` with the session ID
+
+**Expected Behavior**:
+- The sub-agent's CancellationToken is triggered via `session.interrupt()`
+- The sub-agent's processing stops at the next checkpoint
+- SubAgentDriver status changes to "interrupted"
+- Parent receives an interruption notification
+- Tool result: `Sub-agent <session_id> interrupted`
+
+---
+
+## Test 10: Observe a sub-agent session via /attach
+
+**Steps**:
+1. Launch a sub-agent, note its session ID
+2. Type `/attach <sub_agent_session_id>`
+
+**Expected Behavior**:
+- History from the sub-agent session replays in the CLI
+- Live events from the sub-agent stream in real-time (read-only)
+- InteractionRequests are auto-resolved in the observer
+- Use `/detach` to stop observing
+
+---
+
+## Test 11: Sub-agent with different agent types
+
+**Scenario**: Launch a native agent sub-agent from a ccagent parent, or vice versa.
+
+**Steps**:
+1. Start with `python cc_main.py` (CCAgent as primary)
+2. Ask: `Launch a native agent to list files in the current directory`
+
+**Expected Behavior**:
+- A native agent session is created (different agent type from parent)
+- The sub-agent uses its own tool registry
+- Communication flows correctly through the SubAgentDriver
+- Completion notification received by parent
 
 ---
 
 ## Notes
 
-- Use `/unpipe <session_id>` to disconnect a pipe, or `Runtime.disconnect_pipe()` programmatically
-- Runtime tracks active pipes in `_pipes` dict keyed by sorted session IDs
-- All active pipes are torn down during `Runtime._shutdown()`
-- Pipes auto-resolve all interactions; there is no human-in-the-loop on pipe channels
+- SubAgentDriver lives at `miniclaw/subagent_driver.py` (not in `channels/` to avoid circular imports)
+- Session management tools (`launch_agent`, `reply_agent`, etc.) are registered via `create_registry(runtime_context=ctx)` — they only appear when a RuntimeContext is available
+- Sub-agent sessions are regular sessions in `runtime.sessions` — they persist and can be restored
+- The SubAgentDriver connection is transient (not persisted) — it exists only during the runtime session
