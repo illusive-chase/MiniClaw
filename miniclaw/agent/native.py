@@ -9,14 +9,13 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
+from miniclaw.agent.config import AgentConfig
+from miniclaw.cancellation import CancellationToken
 from miniclaw.memory.base import Memory
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
-from miniclaw.usage import UsageStats
-
-from miniclaw.agent.config import AgentConfig
-from miniclaw.cancellation import CancellationToken
 from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
+from miniclaw.usage import UsageStats
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +97,12 @@ class NativeAgent:
         for iteration in range(max_iterations):
             token.check()  # checkpoint 1: before LLM call
 
+            logger.debug(
+                "[NATIVE iter=%d] Starting LLM call, messages=%d",
+                iteration,
+                len(messages),
+            )
+
             t0 = time.monotonic()
             response: ChatResponse | None = None
 
@@ -121,7 +126,18 @@ class NativeAgent:
 
             if not response.tool_calls:
                 reply = response.text or ""
+                logger.debug(
+                    "[NATIVE iter=%d] LLM returned text-only (no tool calls), ending turn",
+                    iteration,
+                )
                 break
+
+            logger.debug(
+                "[NATIVE iter=%d] LLM returned %d tool call(s): %s",
+                iteration,
+                len(response.tool_calls),
+                ", ".join(tc.name for tc in response.tool_calls),
+            )
 
             # Append assistant message with tool calls
             messages.append(

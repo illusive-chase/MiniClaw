@@ -10,10 +10,9 @@ from hashlib import sha256
 from os import urandom
 from typing import TYPE_CHECKING, Any, Callable
 
-from miniclaw.providers.base import ChatMessage, ToolCall
-
 from miniclaw.agent.config import AgentConfig
-from miniclaw.cancellation import CancelledError, CancellationToken
+from miniclaw.cancellation import CancellationToken, CancelledError
+from miniclaw.providers.base import ChatMessage
 from miniclaw.types import (
     AgentEvent,
     HistoryUpdate,
@@ -123,13 +122,18 @@ class Session:
         """
         while True:
             msg = await self._input_queue.get()
-            if msg.source == "sub_agent" and msg.metadata:
-                self._inject_sub_agent_notification(msg.metadata)
-            process_text = (
-                msg.text
-                if msg.source != "sub_agent"
-                else "[System] Sub-agent event received. Handle it."
+            logger.debug(
+                "[SESSION %s] Dequeued message: source=%s, queue_remaining=%d, "
+                "text_preview=%.100s",
+                self.id,
+                msg.source,
+                self._input_queue.qsize(),
+                msg.text,
             )
+            if msg.source == "sub_agent" and msg.metadata:
+                process_text = self._format_sub_agent_message(msg.metadata)
+            else:
+                process_text = msg.text
             stream = self._process(process_text)
             yield stream, msg.source
 
@@ -237,38 +241,37 @@ class Session:
         finally:
             self._current_token = None
 
-    # --- Sub-agent notification injection ---
+    # --- Sub-agent message formatting ---
 
-    def _inject_sub_agent_notification(self, metadata: dict) -> None:
-        """Inject a synthetic tool-call/result pair into history for sub-agent events."""
-        notification_text = metadata.get("notification_text", "Sub-agent event occurred.")
-        event_data = {
-            k: v
-            for k, v in metadata.items()
-            if k != "notification_text"
-        }
+    @staticmethod
+    def _format_sub_agent_message(metadata: dict) -> str:
+        """Build a single user-role message from sub-agent notification metadata."""
+        event_type = metadata.get("event_type", "")
+        session_id = metadata.get("session_id", "unknown")
 
-        call_id = f"sub_agent_event_{len(self.history)}"
-        self.history.append(
-            ChatMessage(
-                role="assistant",
-                content=None,
-                tool_calls=[
-                    ToolCall(
-                        id=call_id,
-                        name="sub_agent_event",
-                        arguments=event_data,
-                    )
-                ],
+        if event_type == "permission_required":
+            interaction_id = metadata.get("interaction_id", "")
+            tool_name = metadata.get("tool_name", "")
+            notification_text = metadata.get("notification_text", "")
+            return (
+                f"[Sub-agent notification] session_id={session_id}\n"
+                f"Permission required — interaction_id={interaction_id}, "
+                f"tool={tool_name}\n"
+                f"tool_input: {notification_text}\n"
+                f"Use reply_agent to allow/deny. "
+                f"For AskUserQuestion, include answers."
             )
-        )
-        self.history.append(
-            ChatMessage(
-                role="tool",
-                content=notification_text,
-                tool_call_id=call_id,
+
+        if event_type == "turn_complete":
+            notification_text = metadata.get("notification_text", "")
+            return (
+                f"[Sub-agent notification] session_id={session_id}\n"
+                f"Turn complete. Response:\n{notification_text}\n"
             )
-        )
+
+        # Fallback for unknown event types
+        notification_text = metadata.get("notification_text", "Sub-agent event.")
+        return f"[Sub-agent notification] session_id={session_id}\n{notification_text}"
 
     # --- Interrupt ---
 
@@ -331,7 +334,6 @@ class Session:
 
 async def _queue_iter(queue: asyncio.Queue[AgentEvent]) -> AsyncIterator[AgentEvent]:
     """Convert an asyncio.Queue into an AsyncIterator."""
-    sentinel = object()
     while True:
         try:
             event = await asyncio.wait_for(queue.get(), timeout=0.5)

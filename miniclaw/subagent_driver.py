@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from miniclaw.channels.base import Channel
-from miniclaw.interactions import InteractionRequest, InteractionResponse
+from miniclaw.interactions import (
+    InteractionRequest,
+    InteractionResponse,
+    InteractionType,
+)
 from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta, UsageEvent
 
 if TYPE_CHECKING:
@@ -32,12 +37,10 @@ class SubAgentDriver(Channel):
         self,
         session_id: str,
         parent_session: Session,
-        allowed_tools: list[str],
         child_session: Session,
     ) -> None:
         self._session_id = session_id
         self._parent_session = parent_session
-        self._allowed_tools = set(allowed_tools)
         self._child_session = child_session
 
         self._status: str = "running"  # running | completed | failed | interrupted
@@ -83,35 +86,24 @@ class SubAgentDriver(Channel):
 
     async def _handle_interaction(self, request: InteractionRequest) -> None:
         """Handle an InteractionRequest from the child agent."""
-        # Auto-resolve if tool is in allowed list
-        if request.tool_name in self._allowed_tools:
-            request.resolve(InteractionResponse(id=request.id, allow=True))
-            logger.debug(
-                "Auto-resolved interaction %s (tool=%s, allowed)",
-                request.id,
-                request.tool_name,
-            )
-            return
-
-        # Store pending and forward to parent
+        # Store pending and forward to parent uniformly (tool_input JSON)
         self._pending_interactions[request.id] = request
         self._notify_parent(
             "permission_required",
-            (
-                f"Sub-agent {self._session_id} needs permission for "
-                f"tool '{request.tool_name}'. "
-                f"Use reply_agent to respond."
-            ),
+            json.dumps(request.tool_input, ensure_ascii=False, default=str),
             extra={
                 "session_id": self._session_id,
                 "interaction_id": request.id,
                 "tool_name": request.tool_name,
-                "tool_input": str(request.tool_input)[:500],
             },
         )
 
     def resolve_interaction(
-        self, interaction_id: str, action: str, reason: str | None = None
+        self,
+        interaction_id: str,
+        action: str,
+        reason: str | None = None,
+        answers: dict[str, str] | None = None,
     ) -> str:
         """Resolve a pending interaction (called by RuntimeContext)."""
         request = self._pending_interactions.pop(interaction_id, None)
@@ -119,10 +111,16 @@ class SubAgentDriver(Channel):
             return f"No pending interaction with id '{interaction_id}'"
 
         allow = action.lower() in ("allow", "approve", "yes")
+
+        updated_input: dict | None = None
+        if answers and request.type == InteractionType.ASK_USER:
+            updated_input = {**request.tool_input, "answers": answers}
+
         response = InteractionResponse(
             id=interaction_id,
             allow=allow,
             message=reason or "",
+            updated_input=updated_input,
         )
         request.resolve(response)
         return f"Interaction {interaction_id} resolved: {'allowed' if allow else 'denied'}"
@@ -144,6 +142,14 @@ class SubAgentDriver(Channel):
         if extra:
             metadata.update(extra)
 
+        logger.debug(
+            "[SUBAGENT→PARENT] Queuing notification: event_type=%s, session_id=%s, "
+            "parent_queue_size=%d",
+            event_type,
+            self._session_id,
+            self._parent_session._input_queue.qsize(),
+        )
+
         self._parent_session.submit(
             text=text,
             source="sub_agent",
@@ -161,17 +167,17 @@ class SubAgentDriver(Channel):
         try:
             async for stream, source in self._child_session.run():
                 await self.send_stream(stream)
+                # Notify parent that this turn is done (subagent waiting for next input)
+                if self._result:
+                    self._notify_parent(
+                        "turn_complete",
+                        self._result,
+                        extra={"session_id": self._session_id},
+                    )
 
-            # Clean exit
+            # Clean exit — track status internally only
             if self._status == "running":
                 self._status = "completed"
-                self._notify_parent(
-                    "completed",
-                    (
-                        f"Sub-agent {self._session_id} completed. "
-                        f"Result: {(self._result or '(no output)')[:500]}"
-                    ),
-                )
         except asyncio.CancelledError:
             if self._status == "running":
                 self._status = "interrupted"

@@ -32,8 +32,6 @@ class RuntimeContext:
         self,
         agent_type: str,
         task: str,
-        config: dict | None = None,
-        allowed_tools: list[str] | None = None,
     ) -> str:
         """Spawn a background sub-agent session.
 
@@ -43,14 +41,13 @@ class RuntimeContext:
         from miniclaw.subagent_driver import SubAgentDriver
 
         # Create child session via Runtime
-        agent_config = AgentConfig(**(config or {}))
+        agent_config = AgentConfig()
         child_session = self._runtime.create_session(agent_type, agent_config)
 
         # Create SubAgentDriver (dual-role: Channel for child, notifier for parent)
         driver = SubAgentDriver(
             session_id=child_session.id,
             parent_session=self._parent,
-            allowed_tools=allowed_tools or [],
             child_session=child_session,
         )
         self._drivers[child_session.id] = driver
@@ -78,17 +75,19 @@ class RuntimeContext:
         interaction_id: str,
         action: str,
         reason: str | None = None,
+        answers: dict[str, str] | None = None,
     ) -> str:
         """Resolve a pending interaction in a sub-agent session.
 
         action: "allow" | "deny"
+        answer: optional dict of answers for AskUserQuestion interactions.
         Returns a status message.
         """
         driver = self._drivers.get(session_id)
         if driver is None:
             return f"No sub-agent session found: {session_id}"
 
-        return driver.resolve_interaction(interaction_id, action, reason)
+        return driver.resolve_interaction(interaction_id, action, reason, answers)
 
     async def send(self, session_id: str, text: str) -> str:
         """Send a follow-up message to a sub-agent session.

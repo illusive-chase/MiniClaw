@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -28,9 +27,8 @@ class LaunchAgentTool(Tool):
     def description(self) -> str:
         return (
             "Launch a background sub-agent session. The sub-agent runs autonomously "
-            "and you will be notified of its progress, completion, or if it needs "
-            "permission for a tool. Use check_agents to monitor status and "
-            "reply_agent to handle permission requests."
+            "and you will be notified automatically when it completes a turn or needs "
+            "permission for a tool. Before receiving requests, you can continue to chat with users."
         )
 
     def parameters_schema(self) -> dict:
@@ -48,19 +46,6 @@ class LaunchAgentTool(Tool):
                     "type": "string",
                     "description": "The task instruction for the sub-agent.",
                 },
-                "allowed_tools": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "List of tool names the sub-agent is pre-authorized to use "
-                        "without asking for permission. Other tools will require "
-                        "your approval via reply_agent."
-                    ),
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model override for the sub-agent.",
-                },
             },
             "required": ["type", "task"],
         }
@@ -68,22 +53,14 @@ class LaunchAgentTool(Tool):
     async def execute(self, args: dict) -> ToolResult:
         agent_type = args.get("type", "ccagent")
         task = args.get("task", "")
-        allowed_tools = args.get("allowed_tools", [])
-        model = args.get("model")
 
         if not task:
             return ToolResult(output="Error: 'task' is required.", success=False)
-
-        config = {}
-        if model:
-            config["model"] = model
 
         try:
             session_id = await self._ctx.spawn(
                 agent_type=agent_type,
                 task=task,
-                config=config if config else None,
-                allowed_tools=allowed_tools,
             )
             return ToolResult(
                 output=(
@@ -91,7 +68,6 @@ class LaunchAgentTool(Tool):
                     f"Session ID: {session_id}\n"
                     f"Type: {agent_type}\n"
                     f"Task: {task[:200]}\n"
-                    f"Allowed tools: {', '.join(allowed_tools) if allowed_tools else '(none — all require approval)'}"
                 )
             )
         except Exception as e:
@@ -112,7 +88,8 @@ class ReplyAgentTool(Tool):
     def description(self) -> str:
         return (
             "Reply to a pending permission request or question from a background "
-            "sub-agent. Use check_agents to see pending interactions."
+            "sub-agent. The notification message contains the interaction_id — "
+            "use that exact value. For AskUserQuestion, include your answers."
         )
 
     def parameters_schema(self) -> dict:
@@ -125,7 +102,7 @@ class ReplyAgentTool(Tool):
                 },
                 "interaction_id": {
                     "type": "string",
-                    "description": "The interaction ID to respond to.",
+                    "description": "The interaction ID from the notification.",
                 },
                 "action": {
                     "type": "string",
@@ -136,6 +113,13 @@ class ReplyAgentTool(Tool):
                     "type": "string",
                     "description": "Optional reason for the decision.",
                 },
+                "answers": {
+                    "type": "object",
+                    "description": (
+                        "Answers for an AskUserQuestion interaction. "
+                        "Keys are the question text, values are the chosen answer."
+                    ),
+                },
             },
             "required": ["session_id", "interaction_id", "action"],
         }
@@ -145,6 +129,7 @@ class ReplyAgentTool(Tool):
         interaction_id = args.get("interaction_id", "")
         action = args.get("action", "")
         reason = args.get("reason")
+        answers = args.get("answers")
 
         if not session_id or not interaction_id or not action:
             return ToolResult(
@@ -152,7 +137,7 @@ class ReplyAgentTool(Tool):
                 success=False,
             )
 
-        result = self._ctx.resolve(session_id, interaction_id, action, reason)
+        result = self._ctx.resolve(session_id, interaction_id, action, reason, answers)
         return ToolResult(output=result)
 
 
@@ -216,9 +201,8 @@ class CheckAgentsTool(Tool):
 
     def description(self) -> str:
         return (
-            "List all background sub-agents spawned from this session, "
-            "their status, result preview, and any pending interactions "
-            "that need your response."
+            "Only used when users request. List all background sub-agents spawned from this session, "
+            "their status and result preview."
         )
 
     def parameters_schema(self) -> dict:
