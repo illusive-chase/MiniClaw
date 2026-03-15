@@ -13,8 +13,9 @@ from .base import ChatMessage, ChatResponse, Provider, ToolCall
 class AnthropicProvider(Provider):
     """Provider for Anthropic Claude API."""
 
-    def __init__(self, api_key: str, base_url: str = None, model: str = "claude-sonnet-4-6"):
+    def __init__(self, api_key: str, base_url: str = None, model: str = "claude-sonnet-4-6", max_tokens: int = 8192):
         self._model = model
+        self._max_tokens = max_tokens
         self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
 
     def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict]]:
@@ -75,7 +76,7 @@ class AnthropicProvider(Provider):
         kwargs = {
             "model": model or self._model,
             "messages": api_msgs,
-            "max_tokens": 4096,
+            "max_tokens": self._max_tokens,
             "temperature": temperature,
         }
         if system:
@@ -120,7 +121,7 @@ class AnthropicProvider(Provider):
         kwargs = {
             "model": model or self._model,
             "messages": api_msgs,
-            "max_tokens": 4096,
+            "max_tokens": self._max_tokens,
             "temperature": temperature,
         }
         if system:

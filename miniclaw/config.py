@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
         "base_url": None,
         "model": "gpt-4o",
         "temperature": 0.7,
+        "max_tokens": 8192,
     },
     "channel": {
         "type": "cli",

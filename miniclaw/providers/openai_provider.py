@@ -13,8 +13,9 @@ from .base import ChatMessage, ChatResponse, Provider, ToolCall
 class OpenAIProvider(Provider):
     """Provider for OpenAI-compatible APIs."""
 
-    def __init__(self, api_key: str, base_url: str | None = None, model: str = "gpt-4o"):
+    def __init__(self, api_key: str, base_url: str | None = None, model: str = "gpt-4o", max_tokens: int = 8192):
         self._model = model
+        self._max_tokens = max_tokens
         self._client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url or None,
@@ -54,6 +55,7 @@ class OpenAIProvider(Provider):
             "model": model or self._model,
             "messages": self._to_api_messages(messages),
             "temperature": temperature,
+            "max_tokens": self._max_tokens,
         }
         if tools:
             kwargs["tools"] = tools
