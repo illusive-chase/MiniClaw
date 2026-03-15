@@ -106,6 +106,7 @@ class Session:
         """
         token = CancellationToken()
         self._current_token = token
+        interrupted_text: str | None = None
 
         try:
             async with self._lock:
@@ -113,6 +114,7 @@ class Session:
 
                 # Restart loop: handles SessionControl("plan_execute")
                 while pending_text is not None:
+                    interrupted_text = pending_text
                     restart_text: str | None = None
 
                     async for event in self.agent.process(
@@ -161,6 +163,29 @@ class Session:
                     pending_text = restart_text
 
         except CancelledError:
+            # Record the interrupted prompt and a marker so the agent
+            # knows what happened on the next turn.
+            if interrupted_text is not None:
+                self.history.append(
+                    ChatMessage(role="user", content=interrupted_text)
+                )
+                self.history.append(
+                    ChatMessage(
+                        role="assistant",
+                        content="[interrupted by user]",
+                    )
+                )
+                self.metadata.touch()
+                if self.on_history_update is not None:
+                    try:
+                        self.on_history_update()
+                    except Exception:
+                        logger.warning(
+                            "on_history_update failed (session=%s)",
+                            self.id,
+                            exc_info=True,
+                        )
+
             event = InterruptedEvent(partial_history=list(self.history))
             await self._broadcast(event)
             yield event

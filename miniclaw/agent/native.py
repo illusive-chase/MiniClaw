@@ -126,6 +126,7 @@ class NativeAgent:
                 if isinstance(item, ChatResponse):
                     response = item
                 else:
+                    token.check()  # checkpoint 1b: between stream chunks
                     yield TextDelta(item)  # str chunk
 
             if response is None:

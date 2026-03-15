@@ -44,7 +44,7 @@ python main.py
 
 ---
 
-## Test 3: Interrupt does not corrupt history
+## Test 3: Interrupt records prompt and marker in history
 
 **Steps**:
 1. Send: `My favorite color is blue`
@@ -56,7 +56,24 @@ python main.py
 **Expected Behavior**:
 - The response to step 5 should mention "blue"
 - History from before the interrupt is preserved
-- The interrupted message may or may not be in history (partial_history field of InterruptedEvent)
+- The interrupted prompt ("Write a very long poem about nature") is recorded in history as a user message
+- An `[interrupted by user]` assistant message is appended immediately after the prompt
+- The agent sees both entries in subsequent turns and knows what was attempted
+
+---
+
+## Test 3b: Interrupt during subagent records prompt in history
+
+**Steps**:
+1. Send a message that triggers a subagent (e.g. `Use a subagent to research the history of Rust programming language`)
+2. While the subagent is running (activity footer shows subagent tool), press `Ctrl+C`
+3. Send: `What did I just ask you to do?`
+
+**Expected Behavior**:
+- The interrupt stops processing (subagent may finish in background, but the result is discarded)
+- History contains the original prompt as a user message and `[interrupted by user]` as an assistant message
+- The response to step 3 should reference the subagent/research task that was interrupted
+- The agent is aware the previous request was not completed
 
 ---
 

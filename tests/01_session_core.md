@@ -97,7 +97,7 @@ python cc_main.py
 
 **Steps**:
 1. Start the CCAgent (SDK-backed agent)
-2. Send a complex task that triggers plan mode (e.g., `Create a Python script that calculates fibonacci numbers, with tests`)
+2. Send a complex task that triggers plan mode (e.g., `Create a Python script that calculates fibonacci numbers, with tests. Use Plan mode.`)
 3. When the plan approval prompt appears, choose option `[1] Yes, clear context and auto-accept edits`
 
 **Expected Behavior**:
