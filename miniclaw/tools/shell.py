@@ -23,12 +23,17 @@ class ShellTool(Tool):
                     "type": "string",
                     "description": "The shell command to execute",
                 },
+                "timeout": {
+                    "type": "integer",
+                    "description": "Optional timeout in seconds for the command execution. Default is 180 seconds.",
+                },
             },
             "required": ["command"],
         }
 
     async def execute(self, args: dict) -> ToolResult:
         command = args.get("command", "")
+        timeout = args.get("timeout", 180)
         if not command:
             return ToolResult(output="No command provided", success=False)
         try:
@@ -38,7 +43,7 @@ class ShellTool(Tool):
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._workspace_dir,
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             output = stdout.decode(errors="replace")
             if stderr:
                 output += "\n" + stderr.decode(errors="replace")
@@ -47,6 +52,6 @@ class ShellTool(Tool):
                 output = output[:10000] + "\n... (truncated)"
             return ToolResult(output=output or "(no output)", success=proc.returncode == 0)
         except asyncio.TimeoutError:
-            return ToolResult(output="Command timed out after 30 seconds", success=False)
+            return ToolResult(output=f"Command timed out after {timeout} seconds", success=False)
         except Exception as e:
             return ToolResult(output=f"Error: {e}", success=False)
