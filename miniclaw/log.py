@@ -1,8 +1,13 @@
-"""Channel-agnostic file-only logging setup."""
+"""Channel-agnostic logging setup (file + optional console)."""
 
 import logging
 from datetime import date
 from pathlib import Path
+
+from rich.logging import RichHandler
+
+# Silence noisy third-party loggers
+logging.getLogger("markdown_it").setLevel(logging.WARNING)
 
 
 def setup_file_logging(file_level: int, workspace_dir: str) -> logging.FileHandler:
@@ -39,3 +44,23 @@ def adjust_root_level() -> None:
     handlers = logging.root.handlers
     if handlers:
         logging.root.setLevel(min(h.level for h in handlers))
+
+
+def setup_console_logging(console_level: int) -> RichHandler:
+    """Install a RichHandler on the root logger for console output.
+
+    Returns the handler so callers can hold a reference if needed.
+    """
+    console_handler = RichHandler(
+        level=console_level,
+        rich_tracebacks=True,
+        tracebacks_show_locals=True,
+        show_time=True,
+        show_path=True,
+    )
+    console_handler.setLevel(console_level)
+
+    logging.root.addHandler(console_handler)
+    adjust_root_level()
+
+    return console_handler

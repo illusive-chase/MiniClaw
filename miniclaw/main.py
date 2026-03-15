@@ -9,7 +9,7 @@ from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.native import NativeAgent
 from miniclaw.config import load_config
 from miniclaw.listeners.cli import CLIListener
-from miniclaw.log import setup_file_logging
+from miniclaw.log import setup_console_logging, setup_file_logging
 from miniclaw.memory import create_memory
 from miniclaw.persistence import SessionManager
 from miniclaw.providers import create_provider
@@ -23,6 +23,12 @@ def main() -> None:
     file_level = getattr(logging, log_cfg.get("file_level", "warning").upper(), logging.WARNING)
     workspace_dir_cfg = config.get("agent", {}).get("workspace_dir", ".workspace")
     setup_file_logging(file_level, workspace_dir_cfg)
+
+    console_level_str = log_cfg.get("console_level", "").upper()
+    if console_level_str:
+        console_level = getattr(logging, console_level_str, None)
+        if console_level is not None:
+            setup_console_logging(console_level)
 
     logger = logging.getLogger(__name__)
     logger.info("Starting MiniClaw (native agent)")

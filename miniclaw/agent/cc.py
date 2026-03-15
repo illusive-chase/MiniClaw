@@ -6,7 +6,6 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +32,8 @@ from claude_agent_sdk import (
 )
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
+from miniclaw.agent.config import AgentConfig
+from miniclaw.cancellation import CancellationToken
 from miniclaw.interactions import (
     InteractionRequest,
     InteractionResponse,
@@ -40,10 +41,6 @@ from miniclaw.interactions import (
 )
 from miniclaw.log import truncate
 from miniclaw.providers.base import ChatMessage
-from miniclaw.usage import UsageStats
-
-from miniclaw.agent.config import AgentConfig
-from miniclaw.cancellation import CancellationToken
 from miniclaw.types import (
     AgentEvent,
     HistoryUpdate,
@@ -51,20 +48,11 @@ from miniclaw.types import (
     TextDelta,
     UsageEvent,
 )
+from miniclaw.usage import UsageStats
 
 logger = logging.getLogger(__name__)
 
 _SESSION_MARKER = "__cc_session__:"
-
-
-@dataclass
-class _ClientEntry:
-    """Tracks a live ClaudeSDKClient and the config it was created with."""
-
-    client: ClaudeSDKClient
-    model: str | None
-    thinking: dict | None = None
-    effort: str | None = None
 
 
 class CCAgent:
@@ -93,7 +81,6 @@ class CCAgent:
         self._thinking = thinking
         self._effort = effort
 
-        self._clients: dict[str, _ClientEntry] = {}
         self._output_queues: dict[str, asyncio.Queue] = {}
         self._usage: dict[str, UsageStats] = {}
         self._sdk_session_id: str | None = None
@@ -119,15 +106,14 @@ class CCAgent:
         t0 = time.monotonic()
         key = "_default"
 
+        effective_model = config.model or self._default_model
         logger.info(
             "[CC] process start: text_len=%d, history_len=%d, model=%s",
-            len(text), len(history), config.model or self._default_model,
+            len(text), len(history), effective_model,
         )
-
-        client = await self._get_or_create_client(
-            history, config.model or self._default_model
-        )
-        logger.debug("[CC] Client ready: sdk_session_id=%s", self._sdk_session_id)
+        sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
+        options = self._build_options(sdk_session_id, effective_model, client_key=key)
+        logger.debug("[CC] Client ready: sdk_session_id=%s", sdk_session_id)
 
         reply_parts: list[str] = []
         new_session_id: str | None = self._sdk_session_id
@@ -142,12 +128,13 @@ class CCAgent:
 
         async def _run_sdk() -> None:
             try:
-                logger.debug("[CC] SDK query task started")
-                await client.query(text)
-                async for message in client.receive_response():
-                    await output_queue.put(("sdk", message))
-                await output_queue.put(("done", None))
-                logger.debug("[CC] SDK query task completed")
+                async with ClaudeSDKClient(options=options) as client:
+                    logger.debug("[CC] SDK query task started")
+                    await client.query(text)
+                    async for message in client.receive_response():
+                        await output_queue.put(("sdk", message))
+                    await output_queue.put(("done", None))
+                    logger.debug("[CC] SDK query task completed")
             except Exception as exc:
                 logger.debug("[CC] SDK query task error: %s", exc)
                 await output_queue.put(("error", exc))
@@ -312,13 +299,11 @@ class CCAgent:
             logger.error(error_msg)
             reply_parts = [error_msg]
             yield TextDelta(error_msg)
-            await self._close_client(key)
         except Exception as exc:
             error_msg = f"Unexpected error: {exc}"
             logger.error(error_msg, exc_info=True)
             reply_parts = [error_msg]
             yield TextDelta(error_msg)
-            await self._close_client(key)
         finally:
             self._output_queues.pop(key, None)
             if not task.done():
@@ -355,16 +340,14 @@ class CCAgent:
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:
-        """Close SDK client, forcing fresh client on next use."""
+        """Reset session state, forcing fresh SDK session on next use."""
         logger.info("[CC] reset: closing client and clearing session")
-        await self._close_client("_default")
         self._sdk_session_id = None
 
     async def shutdown(self) -> None:
-        """Close all managed clients."""
-        logger.info("[CC] shutdown: closing %d client(s)", len(self._clients))
-        for key in list(self._clients):
-            await self._close_client(key)
+        """Clean up agent resources."""
+        logger.info("[CC] shutdown: closing client")
+        pass
 
     def serialize_state(self) -> dict:
         return {"sdk_session_id": self._sdk_session_id}
@@ -519,48 +502,3 @@ class CCAgent:
 
         return ClaudeAgentOptions(**opts)
 
-    async def _get_or_create_client(
-        self,
-        history: list[ChatMessage],
-        model: str | None,
-    ) -> ClaudeSDKClient:
-        key = "_default"
-        effective_model = model or self._default_model
-
-        entry = self._clients.get(key)
-        if entry is not None:
-            config_changed = (
-                entry.model != effective_model
-                or entry.thinking != self._thinking
-                or entry.effort != self._effort
-            )
-            if config_changed:
-                logger.info("[CC] Config changed — closing old client")
-                await self._close_client(key)
-            else:
-                logger.debug("[CC] Reusing existing client")
-                return entry.client
-
-        sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
-        options = self._build_options(sdk_session_id, model, client_key=key)
-
-        logger.info(
-            "[CC] Creating new client: model=%s, sdk_session=%s, permission_mode=%s",
-            effective_model, sdk_session_id, self._permission_mode,
-        )
-        client = ClaudeSDKClient(options=options)
-        await client.__aenter__()
-        self._clients[key] = _ClientEntry(
-            client=client, model=effective_model,
-            thinking=self._thinking, effort=self._effort,
-        )
-        return client
-
-    async def _close_client(self, key: str) -> None:
-        entry = self._clients.pop(key, None)
-        if entry is not None:
-            try:
-                await entry.client.__aexit__(None, None, None)
-                logger.debug("[CC] Client closed successfully: key=%s", key)
-            except Exception as exc:
-                logger.warning("Error closing client: %s", exc)
