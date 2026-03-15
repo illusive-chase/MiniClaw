@@ -1,4 +1,4 @@
-# MiniClaw Architecture Spec v2
+# MiniClaw Architecture Spec
 
 ## 1. Design Principles
 

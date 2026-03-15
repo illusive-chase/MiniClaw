@@ -11,7 +11,6 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 
 from miniclaw.agent.config import AgentConfig
@@ -138,7 +137,7 @@ class CLIListener(Listener):
                 "  /cost             Show usage stats\n"
                 "  /dump             Save current session\n"
                 "  /rename <name>    Rename current session\n"
-                "  /output logging <level>  Set console log level\n"
+                "  /logging <level>  Set console log level\n"
                 "  /quit, /exit, /q  Exit the REPL",
                 title="Help",
                 border_style="cyan",
@@ -273,28 +272,20 @@ class CLIListener(Listener):
                     current = session.agent.get_effort() or current
                 console.print(f"[dim]Current effort: {current}[/dim]")
 
-        elif cmd == "output":
-            sub_parts = args.split(maxsplit=1)
-            sub_cmd = sub_parts[0].lower() if sub_parts else ""
-            sub_args = sub_parts[1].strip() if len(sub_parts) > 1 else ""
-
-            if sub_cmd == "logging":
-                if not sub_args:
-                    current_level = logging.getLevelName(logging.root.level)
-                    console.print(f"[dim]Current console log level: {current_level}[/dim]")
-                    return
-                level_name = sub_args.upper()
-                level = getattr(logging, level_name, None)
-                if level is None:
-                    console.print("[red]Valid levels: DEBUG, INFO, WARNING, ERROR[/red]")
-                    return
-                logging.root.setLevel(level)
-                for handler in logging.root.handlers:
-                    if hasattr(handler, "stream"):
-                        handler.setLevel(level)
-                console.print(f"[dim]Console log level set to: {level_name}[/dim]")
-            else:
-                console.print("[red]Usage: /output logging <level>[/red]")
-
+        elif cmd == "logging":
+            if not args:
+                current_level = logging.getLevelName(logging.root.level)
+                console.print(f"[dim]Current console log level: {current_level}[/dim]")
+                return
+            level_name = args.upper()
+            level = getattr(logging, level_name, None)
+            if level is None:
+                console.print("[red]Valid levels: DEBUG, INFO, WARNING, ERROR[/red]")
+                return
+            logging.root.setLevel(level)
+            for handler in logging.root.handlers:
+                if hasattr(handler, "stream"):
+                    handler.setLevel(level)
+            console.print(f"[dim]Console log level set to: {level_name}[/dim]")
         else:
             console.print(f"[red]Unknown command: /{cmd}. Type /help for available commands.[/red]")

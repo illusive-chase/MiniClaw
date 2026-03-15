@@ -59,7 +59,6 @@ DEFAULT_CONFIG = {
         "path": "memory.json",
     },
     "logging": {
-        "console_level": "info",
         "file_level": "warning",
     },
     "ccagent": {
