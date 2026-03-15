@@ -125,6 +125,8 @@ class CCAgent:
         reply_parts: list[str] = []
         new_session_id: str | None = self._sdk_session_id
         pending_tools: dict[str, ActivityEvent] = {}
+        text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
+        had_nontext = False  # a non-text event was yielded since last TextDelta
 
         # Set up output queue for interaction routing
         output_queue: asyncio.Queue = asyncio.Queue()
@@ -171,6 +173,7 @@ class CCAgent:
 
                 if tag == "interaction":
                     yield payload  # InteractionRequest — channel resolves
+                    had_nontext = True
                     continue
 
                 # tag == "sdk"
@@ -184,6 +187,7 @@ class CCAgent:
                         name=message.task_type or "agent",
                         summary=message.description,
                     )
+                    had_nontext = True
 
                 elif isinstance(message, TaskProgressMessage):
                     yield ActivityEvent(
@@ -193,6 +197,7 @@ class CCAgent:
                         name=message.last_tool_name or "",
                         summary=message.description,
                     )
+                    had_nontext = True
 
                 elif isinstance(message, TaskNotificationMessage):
                     yield ActivityEvent(
@@ -206,6 +211,7 @@ class CCAgent:
                         name="",
                         summary=message.summary,
                     )
+                    had_nontext = True
 
                 elif isinstance(message, SystemMessage):
                     if message.subtype == "init":
@@ -215,8 +221,15 @@ class CCAgent:
                     for block in message.content:
                         if isinstance(block, TextBlock):
                             t = block.text if block.text.endswith("\n") else block.text + "\n"
+                            # Ensure markdown block separation after non-text events
+                            if had_nontext and text_tail:
+                                if not text_tail.endswith("\n\n"):
+                                    sep = "\n" if text_tail.endswith("\n") else "\n\n"
+                                    yield TextDelta(sep)
+                                had_nontext = False
                             reply_parts.append(t)
                             yield TextDelta(t)
+                            text_tail = (text_tail + t)[-2:]
                         elif isinstance(block, ToolUseBlock):
                             event = ActivityEvent(
                                 kind=ActivityKind.TOOL,
@@ -227,6 +240,7 @@ class CCAgent:
                             )
                             pending_tools[block.id] = event
                             yield event
+                            had_nontext = True
                         elif isinstance(block, ThinkingBlock):
                             pass
 
@@ -239,6 +253,7 @@ class CCAgent:
                                     ActivityStatus.FAILED if block.is_error else ActivityStatus.FINISH
                                 )
                                 yield pending
+                                had_nontext = True
 
                 elif isinstance(message, ResultMessage):
                     self._usage.setdefault(key, UsageStats()).accumulate(message)

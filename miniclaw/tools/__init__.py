@@ -86,7 +86,6 @@ def create_registry(config: dict, memory=None, runtime_context=None) -> ToolRegi
     if runtime_context is not None:
         from miniclaw.tools.session_tools import (
             CancelAgentTool,
-            CheckAgentsTool,
             LaunchAgentTool,
             MessageAgentTool,
             ReplyAgentTool,
@@ -96,7 +95,6 @@ def create_registry(config: dict, memory=None, runtime_context=None) -> ToolRegi
             LaunchAgentTool,
             ReplyAgentTool,
             MessageAgentTool,
-            CheckAgentsTool,
             CancelAgentTool,
         ):
             tool = cls(runtime_context=runtime_context)

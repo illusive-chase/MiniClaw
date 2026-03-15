@@ -92,6 +92,8 @@ class NativeAgent:
         max_iterations = config.max_iterations
         pre_loop_len = len(messages)
         reply = ""
+        text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
+        had_nontext = False  # a non-text event was yielded since last TextDelta
 
         # Tool loop
         for iteration in range(max_iterations):
@@ -116,7 +118,14 @@ class NativeAgent:
                     response = item
                 else:
                     token.check()  # checkpoint 1b: between stream chunks
+                    # Ensure markdown block separation after non-text events
+                    if had_nontext and text_tail:
+                        if not text_tail.endswith("\n\n"):
+                            sep = "\n" if text_tail.endswith("\n") else "\n\n"
+                            yield TextDelta(sep)
+                        had_nontext = False
                     yield TextDelta(item)  # str chunk
+                    text_tail = (text_tail + item)[-2:]
 
             if response is None:
                 break
@@ -161,6 +170,7 @@ class NativeAgent:
                     id=tc_event_id,
                     name=tc.name,
                 )
+                had_nontext = True
 
                 result_text = await self._execute_tool(tc.name, tc.arguments)
 
@@ -175,6 +185,7 @@ class NativeAgent:
                     id=tc_event_id,
                     name=tc.name,
                 )
+                had_nontext = True
 
                 messages.append(
                     ChatMessage(
