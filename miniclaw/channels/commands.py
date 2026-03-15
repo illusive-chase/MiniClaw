@@ -304,6 +304,32 @@ class ResumeCommand(Command):
         return f"\nResumed session '{label}' ({len(restored)} messages restored)."
 
 
+class EffortCommand(Command):
+    _VALID_LEVELS = ("low", "medium", "high", "max")
+
+    def name(self) -> str:
+        return "effort"
+
+    def description(self) -> str:
+        return "Show or set thinking effort (low/medium/high/max)"
+
+    def usage(self) -> str:
+        return "/effort [level]"
+
+    async def execute(self, args: str, ctx: CommandContext) -> str | None:
+        if not args.strip():
+            current = ctx.gateway.get_effort()
+            return f"Current effort: {current or '(default)'}"
+
+        level = args.strip().lower()
+        if level not in self._VALID_LEVELS:
+            return f"Invalid effort level '{level}'. Valid: {', '.join(self._VALID_LEVELS)}"
+
+        old = ctx.gateway.get_effort() or "(default)"
+        ctx.gateway.set_effort(level)
+        return f"Effort changed: {old} → {level}"
+
+
 # ---------- Factory ----------
 
 
@@ -320,4 +346,5 @@ def create_default_registry() -> CommandRegistry:
     registry.register(SessionsCommand())
     registry.register(RenameCommand())
     registry.register(ResumeCommand())
+    registry.register(EffortCommand())
     return registry

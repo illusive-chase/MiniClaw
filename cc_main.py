@@ -19,6 +19,25 @@ _LOG_LEVEL_MAP = {
 }
 
 
+def _parse_thinking(value: str | None) -> dict | None:
+    """Parse --thinking shorthand into a ThinkingConfig dict.
+
+    Accepts: 'adaptive', 'disabled', or an integer (budget_tokens).
+    """
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v == "adaptive":
+        return {"type": "adaptive"}
+    if v == "disabled":
+        return {"type": "disabled"}
+    try:
+        budget = int(v)
+        return {"type": "enabled", "budget_tokens": budget}
+    except ValueError:
+        raise SystemExit(f"Invalid --thinking value: '{value}'. Use 'adaptive', 'disabled', or an integer.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MiniClaw CC runtime")
     parser.add_argument(
@@ -63,6 +82,17 @@ def main():
         default=None,
         type=int,
         help="Maximum agent turns before stopping",
+    )
+    parser.add_argument(
+        "--effort",
+        default=None,
+        choices=["low", "medium", "high", "max"],
+        help="Thinking effort level (low, medium, high, max). 'max' is Opus only.",
+    )
+    parser.add_argument(
+        "--thinking",
+        default=None,
+        help="Thinking mode: 'adaptive', 'disabled', or an integer budget (e.g. 10000)",
     )
     args = parser.parse_args()
 
@@ -112,6 +142,10 @@ def main():
     elif cc_cfg.get("allowed_tools"):
         allowed_tools = cc_cfg["allowed_tools"]
 
+    # Resolve thinking/effort: CLI args > config
+    thinking = _parse_thinking(args.thinking) if args.thinking else cc_cfg.get("thinking")
+    effort = args.effort or cc_cfg.get("effort")
+
     # Build components
     channel = create_channel(config["channel"])
     session_manager = SessionManager(workspace_dir)
@@ -129,16 +163,19 @@ def main():
         allowed_tools=allowed_tools,
         cwd=cwd,
         max_turns=max_turns,
+        thinking=thinking,
+        effort=effort,
     )
 
     gateway = Gateway(agent=agent, session_manager=session_manager)
     gateway.register_channel(channel)
 
     logging.getLogger(__name__).info(
-        "Starting MiniClaw (CC): model=%s, channel=%s, permission_mode=%s",
+        "Starting MiniClaw (CC): model=%s, channel=%s, permission_mode=%s, effort=%s",
         model,
         config["channel"]["type"],
         permission_mode,
+        effort,
     )
 
     asyncio.run(gateway.run())

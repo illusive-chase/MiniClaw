@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.filters import Condition
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.logging import RichHandler
@@ -164,6 +167,31 @@ class CLIChannel(Channel):
         )
         self._console_handler.setLevel(console_level)
 
+        # prompt_toolkit setup
+        self._max_input_chars = int(config.get("max_input_chars", 10000))
+        workspace_dir = config.get("workspace_dir", ".workspace")
+        history_path = Path(workspace_dir) / ".cli_history"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Key bindings that enforce max input length
+        kb = KeyBindings()
+        max_chars = self._max_input_chars
+
+        @kb.add("<any>", filter=Condition(lambda: True))
+        def _char_limit(event):
+            """Ignore printable keystrokes when at the character limit."""
+            buf = event.current_buffer
+            data = event.data
+            # Let control characters through (backspace, enter, arrows, etc.)
+            if len(data) == 1 and data.isprintable() and len(buf.text) >= max_chars:
+                return  # swallow
+            buf.insert_text(data)
+
+        self._prompt_session: PromptSession = PromptSession(
+            history=FileHistory(history_path),
+            key_bindings=kb,
+        )
+
     def log_handler(self) -> logging.Handler | None:
         return self._console_handler
 
@@ -206,11 +234,13 @@ class CLIChannel(Channel):
         self._session_id = gateway.allocate_session("cli_user")
 
         self._console.print(Panel("MiniClaw CLI", subtitle="type /help for commands", style="bold cyan"))
-        loop = asyncio.get_event_loop()
+
+        # Install SIGINT handler that interrupts agent turns instead of killing
+
         while True:
             try:
                 self._console.print("\n[bold green]You:[/] ", end="")
-                line = await loop.run_in_executor(None, sys.stdin.readline)
+                line = await self._prompt_session.prompt_async("")
                 line = line.strip()
                 if not line:
                     continue
@@ -310,20 +340,19 @@ class CLIChannel(Channel):
 
     async def _prompt_interaction(self, request: InteractionRequest) -> InteractionResponse:
         """Prompt the user for an interactive decision."""
-        loop = asyncio.get_event_loop()
 
         if request.type == InteractionType.PERMISSION:
-            return await self._prompt_permission(request, loop)
+            return await self._prompt_permission(request)
         elif request.type == InteractionType.ASK_USER:
-            return await self._prompt_ask_user(request, loop)
+            return await self._prompt_ask_user(request)
         elif request.type == InteractionType.PLAN_APPROVAL:
-            return await self._prompt_plan_approval(request, loop)
+            return await self._prompt_plan_approval(request)
         else:
             # Unknown type — auto-allow
             return InteractionResponse(id=request.id, allow=True)
 
     async def _prompt_permission(
-        self, request: InteractionRequest, loop: asyncio.AbstractEventLoop
+        self, request: InteractionRequest,
     ) -> InteractionResponse:
         """Display a tool permission request and prompt for allow/deny."""
         tool_input = request.tool_input
@@ -353,16 +382,18 @@ class CLIChannel(Channel):
 
         self._console.print(Panel(content, title="Permission Request", border_style="yellow"))
 
-        choice = await loop.run_in_executor(None, lambda: input("> ").strip())
+        choice = await self._prompt_session.prompt_async("> ")
+        choice = choice.strip()
 
         if choice == "2":
-            reason = await loop.run_in_executor(None, lambda: input("Reason (optional): ").strip())
+            reason = await self._prompt_session.prompt_async("Reason (optional): ")
+            reason = reason.strip()
             return InteractionResponse(id=request.id, allow=False, message=reason or "Denied by user")
 
         return InteractionResponse(id=request.id, allow=True)
 
     async def _prompt_ask_user(
-        self, request: InteractionRequest, loop: asyncio.AbstractEventLoop
+        self, request: InteractionRequest,
     ) -> InteractionResponse:
         """Display an AskUserQuestion interaction and collect the user's answer."""
         tool_input = request.tool_input
@@ -388,14 +419,16 @@ class CLIChannel(Channel):
                 lines.append("\n[dim]Enter numbers separated by commas[/dim]")
 
             self._console.print(Panel("\n".join(lines), title="Agent Question", border_style="cyan"))
-            choice = await loop.run_in_executor(None, lambda: input("> ").strip())
+            choice = await self._prompt_session.prompt_async("> ")
+            choice = choice.strip()
 
             # Parse the choice
             other_idx = str(len(options) + 1)
             if multi:
                 selected = [c.strip() for c in choice.split(",")]
                 if other_idx in selected:
-                    custom = await loop.run_in_executor(None, lambda: input("Your answer: ").strip())
+                    custom = await self._prompt_session.prompt_async("Your answer: ")
+                    custom = custom.strip()
                     answers[question_text] = custom
                 else:
                     labels = []
@@ -409,7 +442,8 @@ class CLIChannel(Channel):
                     answers[question_text] = ", ".join(labels)
             else:
                 if choice == other_idx:
-                    custom = await loop.run_in_executor(None, lambda: input("Your answer: ").strip())
+                    custom = await self._prompt_session.prompt_async("Your answer: ")
+                    custom = custom.strip()
                     answers[question_text] = custom
                 else:
                     try:
@@ -432,7 +466,7 @@ class CLIChannel(Channel):
         )
 
     async def _prompt_plan_approval(
-        self, request: InteractionRequest, loop: asyncio.AbstractEventLoop
+        self, request: InteractionRequest,
     ) -> InteractionResponse:
         """Display a plan for review and prompt with 4 approval options."""
         tool_input = request.tool_input
@@ -458,7 +492,8 @@ class CLIChannel(Channel):
             "[3] Yes, manually approve edits\n"
             "[4] No, keep planning[/dim]"
         )
-        choice = await loop.run_in_executor(None, lambda: input("> ").strip())
+        choice = await self._prompt_session.prompt_async("> ")
+        choice = choice.strip()
 
         if choice == "1":
             # Clear context + acceptEdits: pass plan content in message for PlanExecuteAction
@@ -485,9 +520,8 @@ class CLIChannel(Channel):
             )
         else:
             # Keep planning — prompt for feedback
-            feedback = await loop.run_in_executor(
-                None, lambda: input("Feedback (optional): ").strip()
-            )
+            feedback = await self._prompt_session.prompt_async("Feedback (optional): ")
+            feedback = feedback.strip()
             return InteractionResponse(
                 id=request.id,
                 allow=False,

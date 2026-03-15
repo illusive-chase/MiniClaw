@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
         "app_id": "",
         "app_secret": "",
         "verification_token": "",
+        "max_input_chars": 10000,
     },
     "agent": {
         "system_prompt": (
@@ -81,6 +82,8 @@ DEFAULT_CONFIG = {
         ],
         "max_turns": None,
         "cwd": None,
+        "thinking": {"type": "adaptive"},
+        "effort": "high",
     },
 }
 
