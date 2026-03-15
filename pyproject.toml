@@ -23,4 +23,13 @@ minicode = "cc_main:main"
 
 [tool.setuptools]
 py-modules = ["main", "cc_main"]
-packages = ["miniclaw", "miniclaw.channels", "miniclaw.memory", "miniclaw.providers", "miniclaw.tools", "miniclaw.ccagent"]
+packages = [
+    "miniclaw",
+    "miniclaw.agent",
+    "miniclaw.channels",
+    "miniclaw.listeners",
+    "miniclaw.memory",
+    "miniclaw.providers",
+    "miniclaw.subagent",
+    "miniclaw.tools",
+]

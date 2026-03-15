@@ -39,7 +39,7 @@ class SubagentExecutor:
     async def run(self, args: dict, tracker: ExecutionTracker) -> str:
         """Run a subagent. Returns the text reply (isolation preserved)."""
         # Lazy import to avoid circular dependency
-        from miniclaw.agent import Agent
+        from miniclaw.agent.native import NativeAgent
 
         agent_type = args.get("type", "")
         task = args.get("task", "")
@@ -70,20 +70,35 @@ class SubagentExecutor:
         record = tracker.start(type=agent_type, task=task, model=model)
 
         # Create sub-agent WITHOUT subagent_executor/execution_tracker (prevents recursion)
-        agent = Agent(
+        agent = NativeAgent(
             provider=self._provider,
             tool_registry=filtered_registry,
             memory=self._memory,
             system_prompt=SUBAGENT_PROMPTS.get(agent_type, ""),
-            max_tool_iterations=self._max_iterations,
-            default_model=self._default_model,
+            default_model=self._default_model or "",
             temperature=self._temperature,
             subagent_executor=None,
             execution_tracker=None,
         )
 
         try:
-            reply, _ = await agent.process_message(task, history=[], model=model)
+            from miniclaw.agent.config import AgentConfig
+            from miniclaw.cancellation import CancellationToken
+
+            config = AgentConfig(
+                model=model or self._default_model or "",
+                system_prompt=SUBAGENT_PROMPTS.get(agent_type, ""),
+                max_iterations=self._max_iterations,
+            )
+            token = CancellationToken()
+            reply_parts: list[str] = []
+            async for event in agent.process(task, history=[], config=config, token=token):
+                from miniclaw.types import HistoryUpdate, TextDelta
+                if isinstance(event, TextDelta):
+                    reply_parts.append(event.text)
+                elif isinstance(event, HistoryUpdate):
+                    pass  # consumed
+            reply = "".join(reply_parts) if reply_parts else "(no output)"
             tracker.complete(record, reply)
             return reply
         except Exception as e:

@@ -47,11 +47,8 @@ DEFAULT_CONFIG = {
         "system_prompt": (
             "You are a helpful assistant with access to tools. "
             "Use tools when needed to answer questions and complete tasks. "
-            "When modifying your own source files, always create a git commit "
-            "before and after the change."
         ),
-        "max_tool_iterations": 15,
-        "subagent_max_iterations": 8,
+        "max_tool_iterations": 50,
         "workspace_dir": ".workspace",
         "tool_deny_list": ['file_edit', 'file_read', 'file_write', 'shell'],
     },
@@ -59,7 +56,6 @@ DEFAULT_CONFIG = {
         "path": "memory.json",
     },
     "logging": {
-        "console_level": "info",
         "file_level": "warning",
     },
     "ccagent": {

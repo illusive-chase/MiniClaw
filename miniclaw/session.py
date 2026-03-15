@@ -1,142 +1,230 @@
-"""Persistent session management — dump/resume conversation history as JSON files."""
+"""Session — the central entity owning conversation state."""
 
-import json
-import os
-from dataclasses import asdict, dataclass, field
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
-from pathlib import Path
+from os import urandom
+from typing import TYPE_CHECKING
 
-from miniclaw.providers.base import ChatMessage, ToolCall
+from miniclaw.providers.base import ChatMessage
+
+from miniclaw.agent.config import AgentConfig
+from miniclaw.cancellation import CancelledError, CancellationToken
+from miniclaw.types import (
+    AgentEvent,
+    HistoryUpdate,
+    InterruptedEvent,
+    SessionControl,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from miniclaw.agent.protocol import AgentProtocol
+    from miniclaw.channels.base import Channel
+
+logger = logging.getLogger(__name__)
+
+
+def generate_session_id() -> str:
+    """Generate a timestamped session ID with random suffix."""
+    ts = datetime.now(timezone.utc)
+    token = sha256(urandom(16)).hexdigest()[:6]
+    return ts.strftime("%Y%m%d_%H%M%S") + "_" + token
 
 
 @dataclass
-class Session:
-    """A single saved conversation session."""
+class SessionMetadata:
+    """Immutable and mutable metadata for a session."""
 
-    id: str
-    sender_id: str
-    created_at: str
-    updated_at: str
+    created_at: str = ""
+    updated_at: str = ""
     name: str | None = None
-    messages: list[dict] = field(default_factory=list)
+    forked_from: str | None = None
+    tags: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.created_at:
+            now = datetime.now(timezone.utc).isoformat()
+            self.created_at = now
+            self.updated_at = now
+
+    def touch(self) -> None:
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
 
-class SessionManager:
-    """Manages session persistence under ``$workspace/.sessions/``.
+@dataclass
+class ObserverBinding:
+    """A read-only channel attached to a session."""
 
-    Pure persistence layer — no concept of "current" session.
+    channel: Channel
+    queue: asyncio.Queue[AgentEvent]
+    task: asyncio.Task | None = None
+
+
+class Session:
+    """The central entity owning conversation state.
+
+    Session owns: history, agent_config, metadata, status.
+    Session borrows: agent (bound by Runtime), primary_channel (bound by Listener).
+    Session does NOT own: Channel lifecycle, Agent lifecycle, persistence.
     """
 
-    def __init__(self, workspace_dir: str):
-        self._sessions_dir = Path(workspace_dir) / ".sessions"
-        self._cache_dir = Path(workspace_dir) / ".cache"
-        self._sessions_dir.mkdir(parents=True, exist_ok=True)
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        id: str,
+        agent: AgentProtocol,
+        agent_config: AgentConfig,
+        metadata: SessionMetadata | None = None,
+        history: list[ChatMessage] | None = None,
+    ) -> None:
+        self.id = id
+        self.agent = agent
+        self.agent_config = agent_config
+        self.metadata = metadata or SessionMetadata()
+        self.history: list[ChatMessage] = history or []
 
-    # ---- lifecycle ----------------------------------------------------------
+        self.primary_channel: Channel | None = None
+        self.observers: list[ObserverBinding] = []
 
-    def create_session(self, sender_id: str) -> Session:
-        """Create a fresh session and return it."""
-        ts = datetime.now(timezone.utc)
-        token = sha256(os.urandom(16)).hexdigest()[:6]
-        session_id = ts.strftime("%Y%m%d_%H%M%S") + "_" + token
-        return Session(
-            id=session_id,
-            sender_id=sender_id,
-            created_at=ts.isoformat(),
-            updated_at=ts.isoformat(),
-        )
+        self._lock = asyncio.Lock()
+        self._current_token: CancellationToken | None = None
+        self.status: str = "active"  # active | paused | archived
 
-    def save(self, session: Session, messages: list[ChatMessage]) -> None:
-        """Persist a session and its messages to disk (no-op if empty)."""
-        if not messages:
-            return
-        session.messages = self.serialize_messages(messages)
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        path = self._sessions_dir / f"{session.id}.json"
-        with open(path, "w") as f:
-            json.dump(asdict(session), f, indent=2, ensure_ascii=False)
+    # --- Core: process a message ---
 
-    def load_session(self, session_id: str) -> Session:
-        """Load a session from disk by exact ID."""
-        path = self._sessions_dir / f"{session_id}.json"
-        if not path.exists():
-            raise FileNotFoundError(f"No session file: {session_id}")
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Corrupt session file {session_id}: {exc}") from exc
-        return Session(**data)
+    async def process(self, text: str) -> AsyncIterator[AgentEvent]:
+        """Process user input through the bound agent.
 
-    def list_sessions(self) -> list[Session]:
-        """Return all saved sessions, newest first (skips corrupt files)."""
-        sessions: list[Session] = []
-        for p in self._sessions_dir.glob("*.json"):
-            try:
-                with open(p) as f:
-                    data = json.load(f)
-                sessions.append(Session(**data))
-            except (json.JSONDecodeError, TypeError, KeyError):
-                continue
-        sessions.sort(key=lambda s: s.updated_at, reverse=True)
-        return sessions
-
-    def resolve_prefix(self, prefix: str) -> Session:
-        """Find a unique session by ID prefix or name prefix.
-
-        Raises ``ValueError`` on zero or ambiguous matches.
+        Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
+        Consumes internally: HistoryUpdate, SessionControl.
         """
-        prefix_lower = prefix.lower()
-        matches: list[Session] = []
-        for session in self.list_sessions():
-            if session.id.startswith(prefix):
-                matches.append(session)
-            elif session.name and session.name.lower().startswith(prefix_lower):
-                matches.append(session)
-        if not matches:
-            raise ValueError(f"No session matching '{prefix}'")
-        if len(matches) > 1:
-            labels = [f"  {s.id} ({s.name or 'unnamed'})" for s in matches]
-            raise ValueError(
-                f"Ambiguous prefix '{prefix}', matches:\n" + "\n".join(labels)
-            )
-        return matches[0]
+        token = CancellationToken()
+        self._current_token = token
 
-    # ---- serialization helpers ---------------------------------------------
+        try:
+            async with self._lock:
+                pending_text: str | None = text
 
-    @staticmethod
-    def serialize_messages(messages: list[ChatMessage]) -> list[dict]:
-        result: list[dict] = []
-        for m in messages:
-            d: dict = {"role": m.role, "content": m.content}
-            if m.tool_calls:
-                d["tool_calls"] = [
-                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                    for tc in m.tool_calls
-                ]
-            if m.tool_call_id:
-                d["tool_call_id"] = m.tool_call_id
-            result.append(d)
-        return result
+                # Restart loop: handles SessionControl("plan_execute")
+                while pending_text is not None:
+                    restart_text: str | None = None
 
-    @staticmethod
-    def deserialize_messages(data: list[dict]) -> list[ChatMessage]:
-        result: list[ChatMessage] = []
-        for d in data:
-            tool_calls = None
-            if "tool_calls" in d:
-                tool_calls = [
-                    ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
-                    for tc in d["tool_calls"]
-                ]
-            result.append(
-                ChatMessage(
-                    role=d["role"],
-                    content=d.get("content"),
-                    tool_calls=tool_calls,
-                    tool_call_id=d.get("tool_call_id"),
+                    async for event in self.agent.process(
+                        pending_text,
+                        list(self.history),
+                        self.agent_config,
+                        token,
+                    ):
+                        if isinstance(event, HistoryUpdate):
+                            self.history = event.history
+                            self.metadata.touch()
+
+                        elif isinstance(event, SessionControl):
+                            if event.action == "plan_execute":
+                                logger.info(
+                                    "SessionControl(plan_execute) — clearing history "
+                                    "and restarting (session=%s)",
+                                    self.id,
+                                )
+                                self.history = []
+                                await self.agent.reset()
+                                restart_text = event.payload.get(
+                                    "plan_content", "Execute the plan."
+                                )
+                                break
+                            else:
+                                logger.warning(
+                                    "Unknown SessionControl action: %s",
+                                    event.action,
+                                )
+
+                        else:
+                            # Forward to caller + broadcast to observers
+                            await self._broadcast(event)
+                            yield event
+
+                    pending_text = restart_text
+
+        except CancelledError:
+            event = InterruptedEvent(partial_history=list(self.history))
+            await self._broadcast(event)
+            yield event
+
+        finally:
+            self._current_token = None
+
+    # --- Interrupt ---
+
+    def interrupt(self) -> None:
+        """Cancel the current in-progress processing."""
+        if self._current_token is not None:
+            self._current_token.cancel()
+
+    # --- Observer management ---
+
+    async def _broadcast(self, event: AgentEvent) -> None:
+        """Push event to all observer channels."""
+        for binding in self.observers:
+            try:
+                binding.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning(
+                    "Observer queue full for session %s, dropping event",
+                    self.id,
                 )
-            )
-        return result
+            except Exception:
+                pass  # observer failure doesn't affect primary
+
+    def attach_observer(self, channel: Channel) -> ObserverBinding:
+        """Attach a read-only observer channel."""
+        queue: asyncio.Queue[AgentEvent] = asyncio.Queue(maxsize=1000)
+
+        async def _observer_loop() -> None:
+            # Replay history
+            await channel.replay(self.history)
+            # Stream live events
+            await channel.on_observe(_queue_iter(queue))
+
+        task = asyncio.create_task(_observer_loop())
+        binding = ObserverBinding(channel=channel, queue=queue, task=task)
+        self.observers.append(binding)
+        return binding
+
+    def detach_observer(self, channel: Channel) -> None:
+        """Remove an observer channel."""
+        for binding in self.observers:
+            if binding.channel is channel:
+                if binding.task is not None:
+                    binding.task.cancel()
+                self.observers.remove(binding)
+                break
+
+    # --- State management ---
+
+    def clear_history(self) -> int:
+        """Clear conversation history. Returns number of messages removed."""
+        count = len(self.history)
+        self.history = []
+        return count
+
+    def bind_primary(self, channel: Channel) -> None:
+        """Bind a primary channel (can send input)."""
+        self.primary_channel = channel
+
+
+async def _queue_iter(queue: asyncio.Queue[AgentEvent]) -> AsyncIterator[AgentEvent]:
+    """Convert an asyncio.Queue into an AsyncIterator."""
+    sentinel = object()
+    while True:
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=0.5)
+            yield event
+        except asyncio.TimeoutError:
+            continue
+        except asyncio.CancelledError:
+            break
