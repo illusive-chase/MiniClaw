@@ -49,10 +49,12 @@ _SESSION_MARKER = "__cc_session__:"
 
 @dataclass
 class _ClientEntry:
-    """Tracks a live ClaudeSDKClient and the model it was created with."""
+    """Tracks a live ClaudeSDKClient and the config it was created with."""
 
     client: ClaudeSDKClient
     model: str | None
+    thinking: dict | None = None
+    effort: str | None = None
 
 
 class CCAgent:
@@ -74,6 +76,8 @@ class CCAgent:
         allowed_tools: list[str] | None = None,
         cwd: str | None = None,
         max_turns: int | None = None,
+        thinking: dict | None = None,
+        effort: str | None = None,
     ):
         self._system_prompt = system_prompt
         self._default_model = default_model  # Gateway reads this directly
@@ -81,6 +85,8 @@ class CCAgent:
         self._allowed_tools = allowed_tools
         self._cwd = cwd or "."
         self._max_turns = max_turns
+        self._thinking = thinking
+        self._effort = effort
         self._last_history: list[ChatMessage] | None = None
         self._clients: dict[str, _ClientEntry] = {}
         # Per-client output queues for interaction routing
@@ -229,6 +235,12 @@ class CCAgent:
         # Attach the interaction callback
         opts["can_use_tool"] = self._make_can_use_tool(client_key)
 
+        # Thinking configuration
+        if self._thinking is not None:
+            opts["thinking"] = self._thinking
+        if self._effort is not None:
+            opts["effort"] = self._effort
+
         return ClaudeAgentOptions(**opts)
 
     # --- Client pool management ---
@@ -247,11 +259,20 @@ class CCAgent:
         # Check for existing client (skip reuse if permission_mode_override forces a new client)
         entry = self._clients.get(key)
         if entry is not None and permission_mode_override is None:
-            # If model changed, close old client and create new one
-            if entry.model != effective_model:
+            # If model, thinking, or effort changed, close old client and create new one
+            config_changed = (
+                entry.model != effective_model
+                or entry.thinking != self._thinking
+                or entry.effort != self._effort
+            )
+            if config_changed:
                 logger.info(
-                    "Model changed (%s -> %s), recreating client (session=%s)",
-                    entry.model, effective_model, key,
+                    "Client config changed (model=%s→%s, thinking=%s→%s, effort=%s→%s), "
+                    "recreating client (session=%s)",
+                    entry.model, effective_model,
+                    entry.thinking, self._thinking,
+                    entry.effort, self._effort,
+                    key,
                 )
                 await self._close_client(key)
             else:
@@ -281,7 +302,10 @@ class CCAgent:
 
         client = ClaudeSDKClient(options=options)
         await client.__aenter__()
-        self._clients[key] = _ClientEntry(client=client, model=effective_model)
+        self._clients[key] = _ClientEntry(
+            client=client, model=effective_model,
+            thinking=self._thinking, effort=self._effort,
+        )
         logger.debug("Active clients: %d", len(self._clients))
         return client
 
@@ -331,6 +355,22 @@ class CCAgent:
         except RuntimeError:
             return
         loop.call_soon_threadsafe(lambda: loop.create_task(self.interrupt(session_id)))
+
+    # --- Thinking / effort configuration ---
+
+    def get_effort(self) -> str | None:
+        return self._effort
+
+    def set_effort(self, effort: str | None) -> None:
+        """Set effort level. Client will be recreated on next message."""
+        self._effort = effort
+
+    def get_thinking(self) -> dict | None:
+        return self._thinking
+
+    def set_thinking(self, thinking: dict | None) -> None:
+        """Set thinking config. Client will be recreated on next message."""
+        self._thinking = thinking
 
     # --- Core interface ---
 

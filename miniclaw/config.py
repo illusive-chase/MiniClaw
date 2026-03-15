@@ -82,6 +82,8 @@ DEFAULT_CONFIG = {
         ],
         "max_turns": None,
         "cwd": None,
+        "thinking": {"type": "adaptive"},
+        "effort": "high",
     },
 }
 

@@ -258,6 +258,17 @@ class Gateway:
             return self._agent.get_usage(session_id)
         return None
 
+    def get_effort(self) -> str | None:
+        """Return current thinking effort level (if agent supports it)."""
+        if hasattr(self._agent, "get_effort"):
+            return self._agent.get_effort()
+        return None
+
+    def set_effort(self, effort: str | None) -> None:
+        """Set thinking effort level (if agent supports it)."""
+        if hasattr(self._agent, "set_effort"):
+            self._agent.set_effort(effort)
+
     async def interrupt(self, session_id: str) -> None:
         """Interrupt a running agent turn for the given session."""
         if hasattr(self._agent, "interrupt"):
