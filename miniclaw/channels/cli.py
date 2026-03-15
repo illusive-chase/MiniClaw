@@ -186,6 +186,74 @@ class CLIChannel(Channel):
     async def send(self, text: str) -> None:
         self._console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
 
+    async def on_observe(self, stream: AsyncIterator[AgentEvent]) -> None:
+        """Render events as a read-only observer without a permanent Live display.
+
+        Unlike send_stream(), this does NOT show a spinner when idle.
+        A Live display is only created when events actually arrive (start of
+        a turn) and stopped when the turn completes (UsageEvent / InterruptedEvent).
+        This prevents the "infinite Thinking..." problem and avoids interfering
+        with the REPL's prompt_toolkit input.
+        """
+        buffer = ""
+        tracker = ActivityTracker()
+        footer = ActivityFooter()
+        live: Live | None = None
+
+        async def _auto_resolve(
+            source: AsyncIterator[AgentEvent],
+        ) -> AsyncIterator[AgentEvent]:
+            async for event in source:
+                if isinstance(event, InteractionRequest):
+                    event.resolve(InteractionResponse(id=event.id, allow=True))
+                else:
+                    yield event
+
+        try:
+            async for event in _auto_resolve(stream):
+                # Start Live on first event of a new turn
+                if live is None:
+                    buffer = ""
+                    tracker = ActivityTracker()
+                    footer = ActivityFooter()
+                    live = Live(console=self._console, refresh_per_second=8)
+                    live.start()
+
+                if isinstance(event, ActivityEvent):
+                    tracker.apply(event)
+                    footer.update(tracker.snapshot())
+                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    live.update(StreamDisplay(panel, footer))
+
+                elif isinstance(event, TextDelta):
+                    buffer += event.text
+                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    live.update(StreamDisplay(panel, footer))
+
+                elif isinstance(event, UsageEvent):
+                    u = event.usage
+                    total = u.input_tokens + u.output_tokens
+                    buffer += f"\n\n> tokens: {total:,} ({u.input_tokens:,} in + {u.output_tokens:,} out)"
+                    # Turn complete — finalize and stop Live
+                    if live is not None:
+                        live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                        live.stop()
+                        live = None
+
+                elif isinstance(event, InterruptedEvent):
+                    buffer += "\n\n[interrupted]"
+                    if live is not None:
+                        live.update(Panel(Markdown(buffer), title="Assistant", border_style="yellow"))
+                        live.stop()
+                        live = None
+
+        finally:
+            # Cleanup on detach (task cancellation) or stream end
+            if live is not None:
+                if buffer:
+                    live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                live.stop()
+
     async def replay(self, history: list[ChatMessage]) -> None:
         for msg in history:
             if msg.role == "user" and msg.content:
