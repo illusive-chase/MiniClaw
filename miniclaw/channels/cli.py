@@ -6,7 +6,7 @@ import asyncio
 import logging
 import signal
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -143,6 +143,14 @@ class StreamDisplay:
         yield from self._footer.__rich_console__(console, options)
 
 
+class SingleLineHistory(FileHistory):
+    """FileHistory that collapses multi-line entries to single lines on recall."""
+
+    def load_history_strings(self) -> Iterable[str]:
+        for entry in super().load_history_strings():
+            yield entry.replace("\n", "  ")
+
+
 class CLIChannel(Channel):
     """Interactive command-line channel for testing."""
 
@@ -152,6 +160,7 @@ class CLIChannel(Channel):
         self._gw: Gateway | None = None
         self._session_id: str | None = None
         self._agent_turn_active: bool = False
+        self._interrupted: bool = False
 
         self._console = Console(theme=Theme({
             "markdown.code": "bold magenta on white",
@@ -191,7 +200,7 @@ class CLIChannel(Channel):
             buf.insert_text(data)
 
         self._prompt_session: PromptSession = PromptSession(
-            history=FileHistory(str(history_path)),
+            history=SingleLineHistory(str(history_path)),
             key_bindings=kb,
         )
 
@@ -244,8 +253,8 @@ class CLIChannel(Channel):
 
         def _sigint_handler():
             if self._agent_turn_active and self._gw and self._session_id:
-                self._console.print("\n[bold yellow][Interrupting...][/]")
-                asyncio.create_task(self._gw.interrupt(self._session_id))
+                self._interrupted = True
+                self._gw.interrupt_sync(self._session_id)
             else:
                 # Not in an agent turn — raise KeyboardInterrupt for input loop
                 raise KeyboardInterrupt
@@ -351,7 +360,12 @@ class CLIChannel(Channel):
                     panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
         finally:
+            was_interrupted = self._interrupted
             self._agent_turn_active = False
+            self._interrupted = False
+            # Show interrupt notice
+            if was_interrupted:
+                self._console.print("[bold yellow][Interrupted][/]")
             # Final render with status footer appended to the markdown content
             status = self._format_status_footer()
             final_content = buffer + status if buffer else status

@@ -265,6 +265,11 @@ class Gateway:
         else:
             logger.warning("Agent does not support interrupt")
 
+    def interrupt_sync(self, session_id: str) -> None:
+        """Synchronous interrupt — safe to call from signal handlers."""
+        if hasattr(self._agent, "interrupt_sync"):
+            self._agent.interrupt_sync(session_id)
+
     # --- internal ---
 
     def _dump_all(self) -> None:

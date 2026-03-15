@@ -321,6 +321,17 @@ class CCAgent:
         else:
             logger.warning("No active client to interrupt (session=%s)", key)
 
+    def interrupt_sync(self, session_id: str | None = None) -> None:
+        """Synchronous interrupt — safe to call from signal handlers.
+
+        Schedules the async interrupt() on the running event loop.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            return
+        loop.call_soon_threadsafe(lambda: loop.create_task(self.interrupt(session_id)))
+
     # --- Core interface ---
 
     async def process_message(

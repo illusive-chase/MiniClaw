@@ -73,6 +73,13 @@ class Agent:
         else:
             logger.warning("No active turn to interrupt (session=%s)", key)
 
+    def interrupt_sync(self, session_id: str | None = None) -> None:
+        """Synchronous interrupt — safe to call from signal handlers."""
+        key = session_id or "_default"
+        event = self._interrupt_events.get(key)
+        if event is not None:
+            event.set()
+
     async def _interruptible(self, coro, session_id: str | None = None):
         """Run a coroutine, cancelling it if the interrupt event fires.
 
