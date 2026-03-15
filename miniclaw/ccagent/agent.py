@@ -308,6 +308,19 @@ class CCAgent:
         for key in list(self._clients):
             await self._close_client(key)
 
+    async def interrupt(self, session_id: str | None = None) -> None:
+        """Interrupt a running agent turn by sending an interrupt signal via the SDK."""
+        key = session_id or "_default"
+        entry = self._clients.get(key)
+        if entry is not None:
+            logger.info("Sending interrupt (session=%s)", key)
+            try:
+                await entry.client.interrupt()
+            except Exception as exc:
+                logger.warning("Interrupt failed (session=%s): %s", key, exc)
+        else:
+            logger.warning("No active client to interrupt (session=%s)", key)
+
     # --- Core interface ---
 
     async def process_message(

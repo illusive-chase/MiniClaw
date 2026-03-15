@@ -41,6 +41,7 @@ DEFAULT_CONFIG = {
         "app_id": "",
         "app_secret": "",
         "verification_token": "",
+        "max_input_chars": 10000,
     },
     "agent": {
         "system_prompt": (

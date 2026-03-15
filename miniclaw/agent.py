@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -20,6 +21,10 @@ if TYPE_CHECKING:
     from miniclaw.subagent.tracker import ExecutionTracker
 
 logger = logging.getLogger(__name__)
+
+
+class _Interrupted(Exception):
+    """Raised by _interruptible() when the interrupt event fires."""
 
 
 class Agent:
@@ -50,12 +55,66 @@ class Agent:
         self._subagent_executor = subagent_executor
         self._execution_tracker = execution_tracker
         self._usage: dict[str, UsageStats] = {}
+        self._interrupt_events: dict[str, asyncio.Event] = {}
 
     def _accumulate_usage(self, response: ChatResponse, session_id: str | None, duration_ms: int = 0) -> None:
         """Accumulate token usage from a ChatResponse."""
         key = session_id or "_default"
         stats = self._usage.setdefault(key, UsageStats())
         stats.accumulate_token_usage(response.usage, duration_ms)
+
+    async def interrupt(self, session_id: str | None = None) -> None:
+        """Signal the agent to stop processing the current turn."""
+        key = session_id or "_default"
+        event = self._interrupt_events.get(key)
+        if event is not None:
+            logger.info("Interrupt requested (session=%s)", key)
+            event.set()
+        else:
+            logger.warning("No active turn to interrupt (session=%s)", key)
+
+    async def _interruptible(self, coro, session_id: str | None = None):
+        """Run a coroutine, cancelling it if the interrupt event fires.
+
+        Returns the coroutine result, or raises ``_Interrupted`` if interrupted.
+        """
+        key = session_id or "_default"
+        event = self._interrupt_events.get(key)
+        if event is None or event.is_set():
+            if event and event.is_set():
+                raise _Interrupted()
+            return await coro
+
+        task = asyncio.ensure_future(coro)
+        waiter = asyncio.ensure_future(event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                {task, waiter}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            for p in pending:
+                p.cancel()
+                try:
+                    await p
+                except asyncio.CancelledError:
+                    pass
+
+            if task in done:
+                return task.result()
+
+            # Interrupted — cancel the task
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise _Interrupted()
+        except asyncio.CancelledError:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            raise
 
     async def _run_tool_call_loop(
         self,
@@ -67,13 +126,21 @@ class Agent:
         """Run the tool call loop until the LLM returns a text-only response."""
         effective_model = model or self._default_model
         for iteration in range(self._max_tool_iterations):
-            t0 = time.monotonic()
-            response = await self._provider.chat(
-                messages=messages,
-                tools=tool_specs if tool_specs else None,
-                model=effective_model,
-                temperature=self._temperature,
-            )
+            try:
+                t0 = time.monotonic()
+                response = await self._interruptible(
+                    self._provider.chat(
+                        messages=messages,
+                        tools=tool_specs if tool_specs else None,
+                        model=effective_model,
+                        temperature=self._temperature,
+                    ),
+                    session_id,
+                )
+            except _Interrupted:
+                last_text = messages[-1].content if messages else ""
+                return f"{last_text}\n\n(Interrupted by user)"
+
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._accumulate_usage(response, session_id, elapsed_ms)
 
@@ -92,25 +159,33 @@ class Agent:
                 logger.info(f"Tool call: {tc.name}({json.dumps(tc.arguments, ensure_ascii=False)[:200]})")
 
                 # Built-in dispatch (subagent/threads) before ToolRegistry
-                if tc.name == "subagent" and self._subagent_executor is not None:
-                    result_text = await self._subagent_executor.run(
-                        tc.arguments, self._execution_tracker
-                    )
-                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
-                elif tc.name == "threads" and self._execution_tracker is not None:
-                    result_text = self._execution_tracker.summary()
-                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
-                else:
-                    tool = self._tools.get(tc.name)
-                    if tool is None:
-                        result_text = f"Error: unknown tool '{tc.name}'"
-                        logger.warning(result_text)
-                    else:
-                        result = await tool.execute(tc.arguments)
-                        result_text = result.output
-                        if not result.success:
-                            result_text = f"[FAILED] {result_text}"
+                try:
+                    if tc.name == "subagent" and self._subagent_executor is not None:
+                        result_text = await self._interruptible(
+                            self._subagent_executor.run(
+                                tc.arguments, self._execution_tracker
+                            ),
+                            session_id,
+                        )
                         logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                    elif tc.name == "threads" and self._execution_tracker is not None:
+                        result_text = self._execution_tracker.summary()
+                        logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                    else:
+                        tool = self._tools.get(tc.name)
+                        if tool is None:
+                            result_text = f"Error: unknown tool '{tc.name}'"
+                            logger.warning(result_text)
+                        else:
+                            result = await self._interruptible(
+                                tool.execute(tc.arguments), session_id,
+                            )
+                            result_text = result.output
+                            if not result.success:
+                                result_text = f"[FAILED] {result_text}"
+                            logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                except _Interrupted:
+                    return response.text or "(Interrupted by user)"
 
                 messages.append(ChatMessage(
                     role="tool",
@@ -188,7 +263,12 @@ class Agent:
         # Track turn
         key = session_id or "_default"
         self._usage.setdefault(key, UsageStats()).num_turns += 1
-        reply = await self._run_tool_call_loop(messages, tool_specs, model=model, session_id=session_id)
+        # Set up interrupt event for this turn
+        self._interrupt_events[key] = asyncio.Event()
+        try:
+            reply = await self._run_tool_call_loop(messages, tool_specs, model=model, session_id=session_id)
+        finally:
+            self._interrupt_events.pop(key, None)
 
         # Build updated history: prior + user + tool-call intermediates + final reply
         updated_history = list(history)
@@ -241,8 +321,14 @@ class Agent:
         # Track turn
         key = session_id or "_default"
         self._usage.setdefault(key, UsageStats()).num_turns += 1
+        # Set up interrupt event for this turn
+        interrupt_event = asyncio.Event()
+        self._interrupt_events[key] = interrupt_event
 
         for iteration in range(self._max_tool_iterations):
+            # Check for interrupt before each LLM call
+            if interrupt_event.is_set():
+                break
             # Stream the LLM response
             t0 = time.monotonic()
             response: ChatResponse | None = None
@@ -275,7 +361,13 @@ class Agent:
             ))
 
             # Execute each tool call with activity events
+            interrupted = False
             for tc in response.tool_calls:
+                # Check for interrupt before each tool call
+                if interrupt_event.is_set():
+                    interrupted = True
+                    break
+
                 tc_event_id = tc.id or str(uuid4())
                 logger.info(f"Tool call: {tc.name}({json.dumps(tc.arguments, ensure_ascii=False)[:200]})")
 
@@ -286,47 +378,64 @@ class Agent:
                     name=tc.name,
                 )
 
-                if tc.name == "subagent" and self._subagent_executor is not None:
-                    agent_id = str(uuid4())
-                    yield ActivityEvent(
-                        kind=ActivityKind.AGENT,
-                        status=ActivityStatus.START,
-                        id=agent_id,
-                        name="subagent",
-                    )
-                    try:
-                        result_text = await self._subagent_executor.run(
-                            tc.arguments, self._execution_tracker
-                        )
+                try:
+                    if tc.name == "subagent" and self._subagent_executor is not None:
+                        agent_id = str(uuid4())
                         yield ActivityEvent(
                             kind=ActivityKind.AGENT,
-                            status=ActivityStatus.FINISH,
+                            status=ActivityStatus.START,
                             id=agent_id,
                             name="subagent",
                         )
-                    except Exception as e:
-                        result_text = f"Error: {e}"
-                        yield ActivityEvent(
-                            kind=ActivityKind.AGENT,
-                            status=ActivityStatus.FAILED,
-                            id=agent_id,
-                            name="subagent",
-                        )
-                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
-                elif tc.name == "threads" and self._execution_tracker is not None:
-                    result_text = self._execution_tracker.summary()
-                    logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
-                else:
-                    tool = self._tools.get(tc.name)
-                    if tool is None:
-                        result_text = f"Error: unknown tool '{tc.name}'"
-                        logger.warning(result_text)
-                    else:
-                        result = await tool.execute(tc.arguments)
-                        result_text = result.output
-                        if not result.success:
-                            result_text = f"[FAILED] {result_text}"
+                        try:
+                            result_text = await self._interruptible(
+                                self._subagent_executor.run(
+                                    tc.arguments, self._execution_tracker
+                                ),
+                                session_id,
+                            )
+                            yield ActivityEvent(
+                                kind=ActivityKind.AGENT,
+                                status=ActivityStatus.FINISH,
+                                id=agent_id,
+                                name="subagent",
+                            )
+                        except Exception as e:
+                            if isinstance(e, _Interrupted):
+                                raise
+                            result_text = f"Error: {e}"
+                            yield ActivityEvent(
+                                kind=ActivityKind.AGENT,
+                                status=ActivityStatus.FAILED,
+                                id=agent_id,
+                                name="subagent",
+                            )
                         logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                    elif tc.name == "threads" and self._execution_tracker is not None:
+                        result_text = self._execution_tracker.summary()
+                        logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                    else:
+                        tool = self._tools.get(tc.name)
+                        if tool is None:
+                            result_text = f"Error: unknown tool '{tc.name}'"
+                            logger.warning(result_text)
+                        else:
+                            result = await self._interruptible(
+                                tool.execute(tc.arguments), session_id,
+                            )
+                            result_text = result.output
+                            if not result.success:
+                                result_text = f"[FAILED] {result_text}"
+                            logger.info(f"Tool result ({tc.name}): {result_text[:200]}")
+                except _Interrupted:
+                    yield ActivityEvent(
+                        kind=ActivityKind.TOOL,
+                        status=ActivityStatus.FAILED,
+                        id=tc_event_id,
+                        name=tc.name,
+                    )
+                    interrupted = True
+                    break
 
                 tool_status = (
                     ActivityStatus.FAILED if result_text.startswith(("[FAILED]", "Error:"))
@@ -344,12 +453,16 @@ class Agent:
                     content=result_text,
                     tool_call_id=tc.id,
                 ))
+
+            if interrupted:
+                break
         else:
             # Max iterations reached
             last_text = messages[-1].content if messages else ""
             reply = f"{last_text}\n\n(Warning: reached maximum tool iterations ({self._max_tool_iterations}))"
 
         # Build updated history and yield sentinel
+        self._interrupt_events.pop(key, None)
         updated_history = list(history)
         updated_history.append(user_msg)
         updated_history.extend(messages[pre_loop_len:])

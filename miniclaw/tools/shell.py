@@ -1,6 +1,8 @@
 """Shell command execution tool."""
 
 import asyncio
+import os
+import signal
 
 from .base import Tool, ToolResult
 
@@ -37,8 +39,18 @@ class ShellTool(Tool):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=self._workspace_dir,
+                start_new_session=True,  # isolate from parent's SIGINT
             )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.CancelledError:
+                # Task was cancelled (e.g. user interrupt) — kill the subprocess
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, OSError):
+                    proc.kill()
+                await proc.wait()
+                raise
             output = stdout.decode(errors="replace")
             if stderr:
                 output += "\n" + stderr.decode(errors="replace")
@@ -48,5 +60,7 @@ class ShellTool(Tool):
             return ToolResult(output=output or "(no output)", success=proc.returncode == 0)
         except asyncio.TimeoutError:
             return ToolResult(output="Command timed out after 30 seconds", success=False)
+        except asyncio.CancelledError:
+            raise  # propagate cancellation
         except Exception as e:
             return ToolResult(output=f"Error: {e}", success=False)

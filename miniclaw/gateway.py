@@ -258,6 +258,13 @@ class Gateway:
             return self._agent.get_usage(session_id)
         return None
 
+    async def interrupt(self, session_id: str) -> None:
+        """Interrupt a running agent turn for the given session."""
+        if hasattr(self._agent, "interrupt"):
+            await self._agent.interrupt(session_id)
+        else:
+            logger.warning("Agent does not support interrupt")
+
     # --- internal ---
 
     def _dump_all(self) -> None:
