@@ -12,7 +12,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.text import Text
-from rich.theme import Theme
 
 from miniclaw.activity import (
     ActivityEvent,
@@ -129,12 +128,8 @@ class StreamDisplay:
 class CLIChannel(Channel):
     """Interactive command-line channel for terminal rendering."""
 
-    def __init__(self, console: Console | None = None) -> None:
-        self._console = console or Console(theme=Theme({
-            "markdown.code": "bold magenta on white",
-            "markdown.code_block": "magenta on white",
-            "markdown.hr": "gray70",
-        }))
+    def __init__(self, console: Console) -> None:
+        self._console = console
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Stream response to the console with progressive markdown."""

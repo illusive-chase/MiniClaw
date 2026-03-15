@@ -17,6 +17,7 @@ from rich.panel import Panel
 from miniclaw.agent.config import AgentConfig
 from miniclaw.channels.cli import CLIChannel
 from miniclaw.listeners.base import Listener
+from miniclaw.log import _console
 
 if TYPE_CHECKING:
     from miniclaw.runtime import Runtime
@@ -41,18 +42,16 @@ class CLIListener(Listener):
         agent_type: str = "native",
         agent_config: AgentConfig | None = None,
         workspace_dir: str = ".workspace",
-        console: Console | None = None,
     ) -> None:
         self._agent_type = agent_type
         self._agent_config = agent_config or AgentConfig()
         self._workspace_dir = workspace_dir
-        self._console = console
         self._session: Session | None = None
 
     async def run(self, runtime: Runtime) -> None:
         """Main REPL loop."""
-        channel = CLIChannel(self._console)
-        console = channel._console
+        console = _console
+        channel = CLIChannel(console=console)
 
         # Create session
         session = runtime.create_session(self._agent_type, self._agent_config)

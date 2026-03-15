@@ -4,6 +4,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+from rich.console import Console, Theme
 from rich.logging import RichHandler
 
 # Silence noisy third-party loggers
@@ -45,6 +46,11 @@ def adjust_root_level() -> None:
     if handlers:
         logging.root.setLevel(min(h.level for h in handlers))
 
+_console = Console(theme=Theme({
+    "markdown.code": "bold magenta on white",
+    "markdown.code_block": "magenta on white",
+    "markdown.hr": "gray70",
+}))
 
 def setup_console_logging(console_level: int) -> RichHandler:
     """Install a RichHandler on the root logger for console output.
@@ -52,6 +58,7 @@ def setup_console_logging(console_level: int) -> RichHandler:
     Returns the handler so callers can hold a reference if needed.
     """
     console_handler = RichHandler(
+        console=_console,
         level=console_level,
         rich_tracebacks=True,
         tracebacks_show_locals=True,

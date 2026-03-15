@@ -108,8 +108,8 @@ class Session:
         self.status: str = "active"  # active | paused | archived
 
         logger.debug(
-            "[SESSION %s] init: agent_type=%s, status=%s",
-            self.id, agent.agent_type, self.status,
+            "[SESSION %s] init: status=%s",
+            self.id, self.status,
         )
 
     # --- Core: submit and process ---
