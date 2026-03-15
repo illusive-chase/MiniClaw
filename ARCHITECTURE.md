@@ -553,6 +553,7 @@ CLIListener.run(runtime):
 │   │   ├─ /attach <id> → runtime.attach_observer(id, cli_channel)
 │   │   ├─ /detach      → runtime.detach_observer(current_observed_id, cli_channel)
 │   │   ├─ /pipe <id>   → runtime.connect_pipe(session.id, id)
+│   │   ├─ /unpipe <id> → runtime.disconnect_pipe(session.id, id)
 │   │   ├─ /sessions    → runtime.list_sessions()
 │   │   ├─ /model [name]→ session.agent_config.model = name
 │   │   └─ /cost        → session.usage_summary()
@@ -620,6 +621,7 @@ class Runtime:
     agent_registry: dict[str, Callable]      # "native" -> Agent factory
     listeners: list[Listener]
     _listener_tasks: list[asyncio.Task]
+    _pipes: dict[tuple[str, str], tuple]     # sorted session IDs -> (driver_a, driver_b, task_a, task_b)
     _shutting_down: bool
 ```
 
@@ -670,9 +672,20 @@ def connect_pipe(self, session_a_id: str, session_b_id: str) -> None:
     pipe_a, pipe_b = create_pipe(session_a_id, session_b_id)
     sa, sb = self.sessions[session_a_id], self.sessions[session_b_id]
 
-    # Start PipeDrivers
-    asyncio.create_task(PipeDriver().run(sa, pipe_a))
-    asyncio.create_task(PipeDriver().run(sb, pipe_b))
+    driver_a = PipeDriver(sa, pipe_a)
+    driver_b = PipeDriver(sb, pipe_b)
+    task_a = asyncio.create_task(driver_a.run(self))
+    task_b = asyncio.create_task(driver_b.run(self))
+
+    key = tuple(sorted([session_a_id, session_b_id]))
+    self._pipes[key] = (driver_a, driver_b, task_a, task_b)
+
+# Disconnect pipe
+async def disconnect_pipe(self, session_a_id: str, session_b_id: str) -> None:
+    key = tuple(sorted([session_a_id, session_b_id]))
+    driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
+    await driver_a.shutdown()
+    await driver_b.shutdown()
 ```
 
 ### 8.3 Persistence
@@ -681,29 +694,55 @@ def connect_pipe(self, session_a_id: str, session_b_id: str) -> None:
 # Save session to disk
 def persist_session(self, session_id: str) -> None:
     session = self.sessions[session_id]
-    self.session_manager.save({
-        "id": session.id,
-        "metadata": asdict(session.metadata),
-        "agent_type": session.agent.agent_type,
-        "agent_config": asdict(session.agent_config),
-        "agent_state": session.agent.serialize_state(),
-        "history": serialize_messages(session.history),
-    })
+    if not session.history:
+        return
+    legacy = PersistedSession(
+        id=session.id,
+        sender_id=session.metadata.tags.get("sender_id", "unknown"),
+        created_at=session.metadata.created_at,
+        updated_at=session.metadata.updated_at,
+        name=session.metadata.name,
+        agent_type=session.agent.agent_type,
+        agent_config=asdict(session.agent_config),
+        agent_state=session.agent.serialize_state(),
+        metadata={
+            "forked_from": session.metadata.forked_from,
+            "tags": dict(session.metadata.tags),
+        },
+    )
+    self.session_manager.save(legacy, session.history)
 
 # Restore session from disk
 async def restore_session(self, session_id: str) -> Session:
-    data = self.session_manager.load(session_id)
-    agent = self.agent_registry[data["agent_type"]](
-        AgentConfig(**data["agent_config"])
-    )
+    loaded = self.session_manager.load_session(session_id)
+    history = SessionManager.deserialize_messages(loaded.messages)
+
+    # Use persisted agent_type, fall back to "native" for old files
+    agent_type = loaded.agent_type or "native"
+    config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
+
+    agent = self.create_agent(agent_type, config)
+    if loaded.agent_state:
+        await agent.restore_state(loaded.agent_state)
+
+    # Rebuild full metadata, merging backward-compat fields
+    meta_tags = dict(loaded.metadata.get("tags", {})) if loaded.metadata else {}
+    if not meta_tags.get("sender_id"):
+        meta_tags["sender_id"] = loaded.sender_id
+
     session = Session(
-        id=data["id"],
-        metadata=SessionMetadata(**data["metadata"]),
-        history=deserialize_messages(data["history"]),
+        id=loaded.id,
         agent=agent,
-        agent_config=AgentConfig(**data["agent_config"]),
+        agent_config=config,
+        metadata=SessionMetadata(
+            created_at=loaded.created_at,
+            updated_at=loaded.updated_at,
+            name=loaded.name,
+            forked_from=loaded.metadata.get("forked_from") if loaded.metadata else None,
+            tags=meta_tags,
+        ),
+        history=history,
     )
-    await session.agent.restore_state(data.get("agent_state", {}))
     self.sessions[session.id] = session
     return session
 ```
@@ -724,21 +763,29 @@ async def run(self) -> None:
 
 async def _supervise(self, listener: Listener) -> None:
     """Restart listener on failure with exponential backoff."""
-    backoff = ExponentialBackoff(min_seconds=2, max_seconds=60)
+    backoff = 2.0
+    max_backoff = 60.0
     while not self._shutting_down:
         try:
             await listener.run(self)
+            break  # clean exit
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Listener {listener} failed: {e}")
-            await backoff.wait()
+            logger.error("Listener %s failed: %s", listener, e)
+            logger.debug("Restarting in %.1fs", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, max_backoff)
 
 async def _shutdown(self) -> None:
-    """Graceful shutdown: stop listeners, persist sessions, close agents."""
+    """Graceful shutdown: stop listeners, disconnect pipes, persist sessions, close agents."""
     self._shutting_down = True
     for listener in self.listeners:
         await listener.shutdown()
+    for key in list(self._pipes):
+        driver_a, driver_b, _, _ = self._pipes.pop(key)
+        await driver_a.shutdown()
+        await driver_b.shutdown()
     for session in self.sessions.values():
         self.persist_session(session.id)
         await session.agent.shutdown()
@@ -842,10 +889,17 @@ stream = session_A.process("Tests passed: 42/42")
 ### 10.3 Teardown
 
 ```
+User: /unpipe session_B
+
 Runtime.disconnect_pipe(session_A.id, session_B.id):
-  pipe_a._inbox.put(POISON_PILL)
-  pipe_b._inbox.put(POISON_PILL)
-  # PipeDrivers exit their loops
+  key = sorted([session_A.id, session_B.id])
+  driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
+  await driver_a.shutdown()   # sends POISON_PILL, PipeDriver exits loop
+  await driver_b.shutdown()   # sends POISON_PILL, PipeDriver exits loop
+
+Runtime tracks active pipes in _pipes: dict[tuple[str, str], (driver_a, driver_b, task_a, task_b)].
+Key is sorted session IDs so lookup is direction-independent.
+Pipes are also torn down during Runtime._shutdown().
 ```
 
 ---
@@ -859,8 +913,8 @@ Runtime.disconnect_pipe(session_A.id, session_B.id):
 2. Developer on CLI: /fork session_B
 3. Runtime:
    a. source = sessions["session_B"]
-   b. forked = await source.fork()           # copies history
-   c. forked.bind_primary(cli_channel)        # CLI drives the fork
+   b. forked = await runtime.fork_session("session_B")  # copies history, creates new agent
+   c. forked.bind_primary(cli_channel)                   # CLI drives the fork
    d. sessions[forked.id] = forked
 4. Developer sees full history replayed in CLI
 5. Developer can now interact with the forked session independently
@@ -911,16 +965,10 @@ Runtime.disconnect_pipe(session_A.id, session_B.id):
 ```json
 {
   "id": "20260315_181530_abc123",
-  "metadata": {
-    "created_at": "2026-03-15T18:15:30Z",
-    "updated_at": "2026-03-15T18:45:00Z",
-    "name": "debug feishu bot",
-    "forked_from": "20260315_170000_xyz789",
-    "tags": {
-      "origin_channel": "feishu",
-      "sender_id": "feishu:user123"
-    }
-  },
+  "sender_id": "feishu:user123",
+  "created_at": "2026-03-15T18:15:30+00:00",
+  "updated_at": "2026-03-15T18:45:00+00:00",
+  "name": "debug feishu bot",
   "agent_type": "ccagent",
   "agent_config": {
     "model": "claude-sonnet-4-6",
@@ -929,12 +977,21 @@ Runtime.disconnect_pipe(session_A.id, session_B.id):
     "max_iterations": 10,
     "memory_enabled": true,
     "thinking": true,
-    "effort": "high"
+    "effort": "high",
+    "temperature": 0.7,
+    "extra": {}
   },
   "agent_state": {
     "sdk_session_id": "cc_abc123def456"
   },
-  "history": [
+  "metadata": {
+    "forked_from": "20260315_170000_xyz789",
+    "tags": {
+      "origin_channel": "feishu",
+      "sender_id": "feishu:user123"
+    }
+  },
+  "messages": [
     {"role": "user", "content": "Hello"},
     {"role": "assistant", "content": "Hi! How can I help?"},
     {"role": "user", "content": "Read main.py"},
@@ -950,6 +1007,10 @@ Runtime.disconnect_pipe(session_A.id, session_B.id):
   ]
 }
 ```
+
+**Backward compatibility:** Top-level `sender_id`, `created_at`, `updated_at`, `name`
+are kept for old JSON files. New fields (`agent_type`, `agent_config`, `agent_state`,
+`metadata`) use defaults when absent, so old files load without error.
 
 ---
 
@@ -1015,20 +1076,3 @@ class MyListener(Listener):
         self._transport.close()
 ```
 
----
-
-## 14. Migration Path from Current Architecture
-
-| Current Component | New Component | Migration |
-|-------------------|--------------|-----------|
-| Gateway (session state + routing + PlanExecuteAction) | Session (state) + Runtime (routing) | Split Gateway into Session + Runtime |
-| Gateway.process_message_stream() | Session.process() | Move stream logic to Session |
-| Gateway._states dict | Runtime.sessions dict | Move to Runtime |
-| Gateway._locks dict | Session._lock (per-session) | Move lock into Session |
-| Agent (duck-typed) | Agent (AgentProtocol) | Add protocol conformance |
-| CCAgent (duck-typed) | CCAgent (AgentProtocol) | Add protocol conformance, move plan_execute to SessionControl |
-| CLIChannel.start() | CLIListener.run() + CLIChannel | Split input loop from rendering |
-| FeishuChannel | FeishuListener + FeishuChannel | Split polling from message delivery |
-| Gateway.run() | Runtime.run() | Runtime supervises listeners |
-| PlanExecuteAction in Gateway | SessionControl in Session.process() | Move restart logic to Session |
-| agent._default_model | agent.default_model (protocol property) | Formalize as protocol |

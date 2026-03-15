@@ -71,9 +71,28 @@ You need two sessions to test pipes. Create one, dump it, then use `/pipe`.
 
 ---
 
-## Test 4: POISON_PILL disconnect
+## Test 4: Disconnect pipe via /unpipe
 
-**What this tests**: PipeEnd.disconnect() sends POISON_PILL to terminate the PipeDriver loop.
+**What this tests**: `Runtime.disconnect_pipe()` tears down a pipe by calling `shutdown()` on both PipeDrivers, which sends POISON_PILL to terminate each driver's loop.
+
+**Steps**:
+1. Connect two sessions via pipe: `/pipe <session_B_id>`
+2. Verify the pipe is active (messages flow between sessions)
+3. Type `/unpipe <session_B_id>`
+
+**Expected Behavior**:
+- `Pipe disconnected: <session_A_id> <-> <session_B_id>`
+- Both PipeDrivers exit their loops cleanly
+- Pipe removed from `runtime._pipes` tracking dict
+- No error or crash
+- The disconnected sessions return to normal (no more pipe input)
+- Log: `Pipe <name> disconnected` for each PipeDriver
+
+---
+
+## Test 5: POISON_PILL direct disconnect
+
+**What this tests**: PipeEnd.disconnect() sends POISON_PILL directly (low-level mechanism used by PipeDriver.shutdown()).
 
 **Steps**:
 1. Connect two sessions via pipe
@@ -81,14 +100,14 @@ You need two sessions to test pipes. Create one, dump it, then use `/pipe`.
 3. (Programmatic test) Call `pipe_end.disconnect()` on one end
 
 **Expected Behavior**:
-- POISON_PILL is placed in the other end's inbox
+- POISON_PILL is placed in the inbox
+- PipeDriver's `listen()` returns None
 - PipeDriver exits its loop cleanly
 - No error or crash
-- The disconnected session returns to normal (no more pipe input)
 
 ---
 
-## Test 5: Pipe with different agent types
+## Test 6: Pipe with different agent types
 
 **Scenario**: Connect a NativeAgent session with a CCAgent session.
 
@@ -106,6 +125,7 @@ You need two sessions to test pipes. Create one, dump it, then use `/pipe`.
 
 ## Notes
 
-- Pipes are currently create-only — there is no `/unpipe` command or `Runtime.disconnect_pipe()` method (see Gap Report)
-- Pipe teardown only happens via POISON_PILL from PipeEnd.disconnect() directly
+- Use `/unpipe <session_id>` to disconnect a pipe, or `Runtime.disconnect_pipe()` programmatically
+- Runtime tracks active pipes in `_pipes` dict keyed by sorted session IDs
+- All active pipes are torn down during `Runtime._shutdown()`
 - Pipes auto-resolve all interactions; there is no human-in-the-loop on pipe channels

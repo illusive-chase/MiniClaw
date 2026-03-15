@@ -132,6 +132,7 @@ class CLIListener(Listener):
                 "  /attach <id>      Attach as observer (read-only)\n"
                 "  /detach           Detach from observed session\n"
                 "  /pipe <id>        Connect current session to another via pipe\n"
+                "  /unpipe <id>      Disconnect pipe to another session\n"
                 "  /model [name]     Show or change model\n"
                 "  /effort [level]   Show or set thinking effort (low/medium/high)\n"
                 "  /cost             Show usage stats\n"
@@ -216,6 +217,16 @@ class CLIListener(Listener):
             try:
                 runtime.connect_pipe(session.id, args)
                 console.print(f"[dim]Pipe connected: {session.id} <-> {args}[/dim]")
+            except Exception as e:
+                console.print(f"[red]Error: {e}[/red]")
+
+        elif cmd == "unpipe":
+            if not args:
+                console.print("[red]Usage: /unpipe <session_id>[/red]")
+                return
+            try:
+                await runtime.disconnect_pipe(session.id, args)
+                console.print(f"[dim]Pipe disconnected: {session.id} <-> {args}[/dim]")
             except Exception as e:
                 console.print(f"[red]Error: {e}[/red]")
 

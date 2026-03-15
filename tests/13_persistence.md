@@ -29,7 +29,7 @@ python main.py
 **Expected Behavior**:
 - `Session saved: <session_id>`
 - JSON file exists at `.workspace/.sessions/<session_id>.json`
-- File contains:
+- File contains all persistence fields:
   ```json
   {
     "id": "YYYYMMDD_HHMMSS_xxxxxx",
@@ -39,9 +39,25 @@ python main.py
     "name": null,
     "messages": [
       {"role": "user", "content": "..."},
-      {"role": "assistant", "content": "..."},
-      ...
-    ]
+      {"role": "assistant", "content": "..."}
+    ],
+    "agent_type": "native",
+    "agent_config": {
+      "model": "",
+      "system_prompt": "",
+      "tools": null,
+      "max_iterations": 10,
+      "memory_enabled": true,
+      "thinking": false,
+      "effort": "medium",
+      "temperature": 0.7,
+      "extra": {}
+    },
+    "agent_state": {},
+    "metadata": {
+      "forked_from": null,
+      "tags": {"sender_id": "unknown"}
+    }
   }
   ```
 
@@ -162,3 +178,93 @@ python main.py
 - The corrupt file is silently skipped
 - Other valid sessions are listed normally
 - No crash or error visible to the user
+
+---
+
+## Test 9: Backward compatibility — old format without extended fields
+
+**What this tests**: Old session JSON files (without `agent_type`, `agent_config`, `agent_state`, `metadata`) still load correctly via defaults.
+
+**Steps**:
+1. Create an old-format JSON file in `.workspace/.sessions/`:
+   ```bash
+   cat > .workspace/.sessions/old_format_test.json << 'EOF'
+   {
+     "id": "old_format_test",
+     "sender_id": "user1",
+     "created_at": "2026-01-01T00:00:00+00:00",
+     "updated_at": "2026-01-01T00:00:00+00:00",
+     "name": "old session",
+     "messages": [
+       {"role": "user", "content": "hello"},
+       {"role": "assistant", "content": "hi there"}
+     ]
+   }
+   EOF
+   ```
+2. Type `/sessions` — verify the old session appears in the list
+3. Type `/resume old_format_test`
+
+**Expected Behavior**:
+- Session loads without error
+- Defaults applied: `agent_type = "native"`, `agent_config = {}`, `agent_state = {}`, `metadata = {}`
+- History replays correctly (2 messages)
+- Session restored as a "native" agent with default `AgentConfig`
+- `sender_id` from top-level field is preserved in metadata tags
+
+---
+
+## Test 10: CCAgent session persistence with agent_state
+
+**What this tests**: CCAgent sessions persist `agent_type: "ccagent"` and `agent_state` containing `sdk_session_id`.
+
+**Steps**:
+1. Start with `python cc_main.py`
+2. Send a few messages
+3. `/dump`
+4. Inspect the JSON file
+
+**Expected Behavior**:
+- JSON file contains:
+  ```json
+  {
+    "agent_type": "ccagent",
+    "agent_state": {
+      "sdk_session_id": "..."
+    }
+  }
+  ```
+- The `agent_config` field reflects the CCAgent configuration (model, tools, etc.)
+
+---
+
+## Test 11: Restore preserves agent type and config
+
+**What this tests**: `restore_session()` uses persisted `agent_type` and `agent_config` instead of hardcoding "native".
+
+**Steps**:
+1. Start with `python cc_main.py`, send messages, `/dump`, note session ID
+2. Restart the application
+3. `/resume <session_id>`
+
+**Expected Behavior**:
+- Session restores as "ccagent" (not "native")
+- Agent config (model, tools, effort, etc.) matches what was persisted
+- If `agent_state` contained `sdk_session_id`, `agent.restore_state()` is called
+- Context from the previous conversation is available
+
+---
+
+## Test 12: Persist session with forked_from metadata
+
+**What this tests**: Forked sessions persist `metadata.forked_from` correctly.
+
+**Steps**:
+1. Build conversation, `/dump`, note session ID
+2. `/fork <session_id>`
+3. `/dump` the forked session
+4. Inspect the forked session's JSON file
+
+**Expected Behavior**:
+- JSON contains `"metadata": {"forked_from": "<source_session_id>", "tags": {...}}`
+- On restore, `session.metadata.forked_from` is correctly populated

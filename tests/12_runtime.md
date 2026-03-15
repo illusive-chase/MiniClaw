@@ -80,10 +80,12 @@ python main.py
 - Runtime._shutdown() is called:
   1. `_shutting_down` flag set to True
   2. All listeners receive `shutdown()` call
-  3. All sessions are persisted to disk
-  4. All agents receive `shutdown()` call
+  3. All active pipes are disconnected (drivers shut down via `driver.shutdown()`)
+  4. All sessions are persisted to disk
+  5. All agents receive `shutdown()` call
 - Log shows: `Runtime shutting down...` → `Runtime shutdown complete`
 - No data loss — sessions with history are saved
+- No lingering pipe tasks after shutdown
 - Process exits cleanly
 
 ---
@@ -98,9 +100,19 @@ python main.py
 
 **Expected Behavior**:
 - Session serialized to `.workspace/.sessions/<id>.json`
-- JSON file contains: id, sender_id, created_at, updated_at, name, messages
-- Restore creates a new Session with deserialized history
+- JSON file contains all fields: id, sender_id, created_at, updated_at, name, messages, agent_type, agent_config, agent_state, metadata
+- `agent_type` reflects the session's agent (e.g., "native" or "ccagent")
+- `agent_config` contains the full serialized AgentConfig (model, tools, effort, etc.)
+- `agent_state` contains agent-specific state (e.g., `{"sdk_session_id": "..."}` for CCAgent, `{}` for native)
+- `metadata` contains `forked_from` and `tags` (including `sender_id`)
+- Restore creates a new Session with:
+  - Deserialized history
+  - Agent created from persisted `agent_type` (not hardcoded "native")
+  - AgentConfig rebuilt from persisted `agent_config` (not default)
+  - `agent.restore_state()` called with persisted `agent_state`
+  - Full SessionMetadata rebuilt including `forked_from` and `tags`
 - The restored session is added to `runtime.sessions`
+- Backward compat: old JSON files without extended fields restore as "native" with default config
 
 ---
 
@@ -130,5 +142,34 @@ python main.py
 **Expected Behavior**:
 - `create_pipe()` creates linked PipeEnd pair
 - Two PipeDriver tasks started via `asyncio.create_task()`
+- Pipe stored in `runtime._pipes` dict keyed by sorted session IDs
 - Log: `Pipe connected: <id_a> <-> <id_b>`
 - Sessions can communicate through the pipe
+
+---
+
+## Test 8: Disconnect pipe via Runtime
+
+**Steps**:
+1. Have two sessions connected via pipe (use `/pipe`)
+2. Type `/unpipe <other_session_id>`
+
+**Expected Behavior**:
+- `Pipe disconnected: <session_id> <-> <other_session_id>`
+- Both PipeDrivers shut down cleanly (POISON_PILL sent to each PipeEnd)
+- Pipe removed from `runtime._pipes` dict
+- PipeDriver tasks exit (no lingering background tasks)
+- Both sessions continue to work normally (no more pipe input)
+- Log: `Pipe disconnected: <id_a> <-> <id_b>`
+
+---
+
+## Test 9: Disconnect nonexistent pipe
+
+**Steps**:
+1. Have a session with no active pipes
+2. Type `/unpipe <some_other_session_id>`
+
+**Expected Behavior**:
+- Error displayed: `No pipe between <session_id> and <other_session_id>`
+- No crash

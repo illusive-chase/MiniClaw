@@ -41,6 +41,10 @@ class Runtime:
         self._agent_registry: dict[str, Callable[..., AgentProtocol]] = {}
         self._listeners: list[Listener] = []
         self._listener_tasks: list[asyncio.Task] = []
+        self._pipes: dict[
+            tuple[str, str],
+            tuple[Any, Any, asyncio.Task, asyncio.Task],
+        ] = {}
         self._shutting_down = False
 
     # --- Agent registry ---
@@ -158,14 +162,29 @@ class Runtime:
 
         driver_a = PipeDriver(sa, pipe_a)
         driver_b = PipeDriver(sb, pipe_b)
-        asyncio.create_task(driver_a.run(self))
-        asyncio.create_task(driver_b.run(self))
+        task_a = asyncio.create_task(driver_a.run(self))
+        task_b = asyncio.create_task(driver_b.run(self))
+
+        key = tuple(sorted([session_a_id, session_b_id]))
+        self._pipes[key] = (driver_a, driver_b, task_a, task_b)
         logger.info("Pipe connected: %s <-> %s", session_a_id, session_b_id)
+
+    async def disconnect_pipe(self, session_a_id: str, session_b_id: str) -> None:
+        """Disconnect a bidirectional pipe between two sessions."""
+        key = tuple(sorted([session_a_id, session_b_id]))
+        if key not in self._pipes:
+            raise ValueError(f"No pipe between {session_a_id} and {session_b_id}")
+        driver_a, driver_b, task_a, task_b = self._pipes.pop(key)
+        await driver_a.shutdown()
+        await driver_b.shutdown()
+        logger.info("Pipe disconnected: %s <-> %s", session_a_id, session_b_id)
 
     # --- Persistence ---
 
     def persist_session(self, session_id: str) -> None:
         """Save session to disk."""
+        from dataclasses import asdict
+
         session = self.sessions[session_id]
         if not session.history:
             return
@@ -178,6 +197,13 @@ class Runtime:
             created_at=session.metadata.created_at,
             updated_at=session.metadata.updated_at,
             name=session.metadata.name,
+            agent_type=session.agent.agent_type,
+            agent_config=asdict(session.agent_config),
+            agent_state=session.agent.serialize_state(),
+            metadata={
+                "forked_from": session.metadata.forked_from,
+                "tags": dict(session.metadata.tags),
+            },
         )
         self._session_manager.save(legacy, session.history)
         logger.debug("Persisted session %s", session_id)
@@ -187,12 +213,22 @@ class Runtime:
         loaded = self._session_manager.load_session(session_id)
         history = SessionManager.deserialize_messages(loaded.messages)
 
-        # Determine agent type from saved data (default to "native")
-        # For now, we restore as native. Future: save agent_type in session file.
-        agent_type = "native"
-        config = AgentConfig()
+        # Use persisted agent_type, fall back to "native" for old files
+        agent_type = loaded.agent_type or "native"
+
+        # Rebuild AgentConfig from persisted data, fall back to defaults
+        config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
 
         agent = self.create_agent(agent_type, config)
+
+        # Restore agent-specific state (e.g., CCAgent sdk_session_id)
+        if loaded.agent_state:
+            await agent.restore_state(loaded.agent_state)
+
+        # Rebuild full metadata
+        meta_tags = dict(loaded.metadata.get("tags", {})) if loaded.metadata else {}
+        if not meta_tags.get("sender_id"):
+            meta_tags["sender_id"] = loaded.sender_id
 
         session = Session(
             id=loaded.id,
@@ -202,7 +238,8 @@ class Runtime:
                 created_at=loaded.created_at,
                 updated_at=loaded.updated_at,
                 name=loaded.name,
-                tags={"sender_id": loaded.sender_id},
+                forked_from=loaded.metadata.get("forked_from") if loaded.metadata else None,
+                tags=meta_tags,
             ),
             history=history,
         )
@@ -245,7 +282,7 @@ class Runtime:
                 backoff = min(backoff * 2, max_backoff)
 
     async def _shutdown(self) -> None:
-        """Graceful shutdown: stop listeners, persist sessions, close agents."""
+        """Graceful shutdown: stop listeners, disconnect pipes, persist sessions, close agents."""
         self._shutting_down = True
         logger.info("Runtime shutting down...")
 
@@ -255,6 +292,15 @@ class Runtime:
                 await listener.shutdown()
             except Exception as e:
                 logger.error("Error shutting down listener: %s", e)
+
+        # Disconnect all pipes
+        for key in list(self._pipes):
+            driver_a, driver_b, _, _ = self._pipes.pop(key)
+            try:
+                await driver_a.shutdown()
+                await driver_b.shutdown()
+            except Exception as e:
+                logger.error("Error disconnecting pipe %s: %s", key, e)
 
         # Persist all sessions
         for session_id in list(self.sessions):

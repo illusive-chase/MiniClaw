@@ -35,7 +35,7 @@ python main.py
 
 **Expected Behavior**:
 - A "Help" panel with cyan border lists all available commands:
-  - /help, /reset, /sessions, /resume, /fork, /attach, /detach, /pipe
+  - /help, /reset, /sessions, /resume, /fork, /attach, /detach, /pipe, /unpipe
   - /model, /effort, /cost, /dump, /rename, /logging, /quit, /exit, /q
 
 ---
@@ -189,3 +189,38 @@ python main.py
 
 **Expected Behavior**:
 - `Goodbye!` message and clean exit (CLIListener treats these as exit commands)
+
+---
+
+## Test 15: /unpipe — disconnect a pipe
+
+**Steps**:
+1. Create two sessions (fork one): `/fork <session_id>`
+2. Connect via pipe: `/pipe <other_session_id>`
+3. Verify pipe is active
+4. Type `/unpipe <other_session_id>`
+
+**Expected Behavior**:
+- `Pipe disconnected: <session_id> <-> <other_session_id>`
+- Both PipeDrivers shut down
+- No lingering background tasks
+
+---
+
+## Test 16: /unpipe without arguments
+
+**Steps**:
+1. Type `/unpipe` (no arguments)
+
+**Expected Behavior**:
+- `Usage: /unpipe <session_id>`
+
+---
+
+## Test 17: /unpipe nonexistent pipe
+
+**Steps**:
+1. Type `/unpipe some_invalid_id` (no active pipe to that session)
+
+**Expected Behavior**:
+- Error displayed: `No pipe between <session_id> and some_invalid_id`

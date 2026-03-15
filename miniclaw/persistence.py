@@ -12,7 +12,11 @@ from miniclaw.providers.base import ChatMessage, ToolCall
 
 @dataclass
 class PersistedSession:
-    """A single saved conversation session (persistence format)."""
+    """A single saved conversation session (persistence format).
+
+    Top-level fields (sender_id, created_at, etc.) are kept for backward
+    compatibility with JSON files written before the extended format.
+    """
 
     id: str
     sender_id: str
@@ -20,6 +24,10 @@ class PersistedSession:
     updated_at: str
     name: str | None = None
     messages: list[dict] = field(default_factory=list)
+    agent_type: str = "native"
+    agent_config: dict = field(default_factory=dict)
+    agent_state: dict = field(default_factory=dict)
+    metadata: dict = field(default_factory=dict)
 
 
 class SessionManager:
