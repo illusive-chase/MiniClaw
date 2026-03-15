@@ -46,7 +46,7 @@ python main.py
       "model": "",
       "system_prompt": "",
       "tools": null,
-      "max_iterations": 10,
+      "max_iterations": 30,
       "memory_enabled": true,
       "thinking": false,
       "effort": "medium",

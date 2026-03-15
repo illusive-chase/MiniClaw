@@ -60,7 +60,7 @@ Ensure `config.yaml` has a working provider (OpenAI or Anthropic).
 
 ## Test 4: Max iterations cap
 
-**What this tests**: The tool loop respects `max_iterations` (default 10 in AgentConfig).
+**What this tests**: The tool loop respects `max_iterations` (default 30 in AgentConfig).
 
 **Steps**:
 1. Send a task that might trigger many tool calls: `Find all Python files in this project and count the lines in each one`

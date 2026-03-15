@@ -16,7 +16,7 @@ class AgentConfig:
     model: str = ""
     system_prompt: str = ""
     tools: list[str] | None = None  # allowed tool names (None = all)
-    max_iterations: int = 10
+    max_iterations: int = 30
     memory_enabled: bool = True
     thinking: bool = False
     effort: str = "medium"  # "low" / "medium" / "high"

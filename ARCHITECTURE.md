@@ -253,7 +253,7 @@ class AgentConfig:
     model: str                              # "claude-sonnet-4-6"
     system_prompt: str                      # custom system prompt
     tools: list[str] | None = None          # allowed tool names (None = all)
-    max_iterations: int = 10                # tool loop cap
+    max_iterations: int = 30                # tool loop cap
     memory_enabled: bool = True
     thinking: bool = False
     effort: str = "medium"                  # "low" / "medium" / "high"
@@ -974,7 +974,7 @@ Pipes are also torn down during Runtime._shutdown().
     "model": "claude-sonnet-4-6",
     "system_prompt": "You are a helpful assistant.",
     "tools": ["shell", "file_read", "file_write", "grep", "glob"],
-    "max_iterations": 10,
+    "max_iterations": 30,
     "memory_enabled": true,
     "thinking": true,
     "effort": "high",

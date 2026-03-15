@@ -26,7 +26,7 @@ config = AgentConfig()
 assert config.model == ""
 assert config.system_prompt == ""
 assert config.tools is None  # None = all tools allowed
-assert config.max_iterations == 10
+assert config.max_iterations == 30
 assert config.memory_enabled is True
 assert config.thinking is False
 assert config.effort == "medium"

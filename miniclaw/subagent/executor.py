@@ -27,7 +27,7 @@ class SubagentExecutor:
         memory: Memory,
         default_model: str | None = None,
         temperature: float = 0.7,
-        max_iterations: int = 8,
+        max_iterations: int = 30,
     ):
         self._provider = provider
         self._main_registry = tool_registry
