@@ -125,6 +125,7 @@ class CCAgent:
         reply_parts: list[str] = []
         new_session_id: str | None = self._sdk_session_id
         pending_tools: dict[str, ActivityEvent] = {}
+        turn_usage = UsageStats()  # per-message usage (yielded to channel)
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
 
@@ -257,6 +258,7 @@ class CCAgent:
 
                 elif isinstance(message, ResultMessage):
                     self._usage.setdefault(key, UsageStats()).accumulate(message)
+                    turn_usage.accumulate(message)
 
         except (CLINotFoundError, CLIConnectionError) as exc:
             error_msg = f"Claude Agent SDK error: {exc}"
@@ -296,7 +298,7 @@ class CCAgent:
         if new_session_id:
             updated_history = self._inject_session_marker(updated_history, new_session_id)
 
-        yield UsageEvent(usage=self.get_usage())
+        yield UsageEvent(usage=turn_usage)
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:

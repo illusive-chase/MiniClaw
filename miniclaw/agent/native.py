@@ -92,6 +92,7 @@ class NativeAgent:
         max_iterations = config.max_iterations
         pre_loop_len = len(messages)
         reply = ""
+        turn_usage = UsageStats()  # per-message usage (yielded to channel)
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
 
@@ -132,6 +133,7 @@ class NativeAgent:
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._accumulate_usage(response, elapsed_ms)
+            turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
 
             if not response.tool_calls:
                 reply = response.text or ""
@@ -205,7 +207,7 @@ class NativeAgent:
         updated_history.extend(messages[pre_loop_len:])
         updated_history.append(ChatMessage(role="assistant", content=reply))
 
-        yield UsageEvent(usage=self.get_usage())
+        yield UsageEvent(usage=turn_usage)
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:
