@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.native import NativeAgent
@@ -14,6 +15,8 @@ from miniclaw.memory import create_memory
 from miniclaw.persistence import SessionManager
 from miniclaw.providers import create_provider
 from miniclaw.runtime import Runtime
+from miniclaw.subagent.executor import SubagentExecutor
+from miniclaw.subagent.tracker import ExecutionTracker
 from miniclaw.tools import create_registry
 
 
@@ -45,6 +48,18 @@ def main() -> None:
     )
 
     # Create native agent
+    subagent_config = deepcopy(config)
+    if "tool_deny_list" in subagent_config["agent"]:
+        subagent_config["agent"]["tool_deny_list"] = []
+    subagent_executor = SubagentExecutor(
+        provider=provider,
+        tool_registry=create_registry(subagent_config),
+        memory=memory,
+        default_model=agent_config.model,
+        temperature=agent_config.temperature,
+    )
+    execution_tracker = ExecutionTracker()
+
     native_agent = NativeAgent(
         provider=provider,
         tool_registry=tool_registry,
@@ -52,6 +67,8 @@ def main() -> None:
         system_prompt=agent_config.system_prompt,
         default_model=agent_config.model,
         temperature=agent_config.temperature,
+        subagent_executor=subagent_executor,
+        execution_tracker=execution_tracker,
     )
 
     # Build runtime
