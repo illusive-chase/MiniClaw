@@ -162,6 +162,8 @@ class CLIListener(Listener):
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
                 "  /plugctx <cmd>    Manage loaded contexts (init/load/unload/list/status/info)\n"
+                "  /pwd              Show current working directory\n"
+                "  /cd [path]        Change working directory (no args = reset)\n"
                 "  /quit, /exit, /q  Exit the REPL",
                 title="Help",
                 border_style="cyan",
@@ -301,6 +303,27 @@ class CLIListener(Listener):
 
         elif cmd == "plugctx":
             await self._handle_plugctx(args, session, console)
+
+        elif cmd == "pwd":
+            cwd, source = session.effective_cwd()
+            console.print(f"[dim]{cwd}[/dim]  [italic]({source})[/italic]")
+
+        elif cmd == "cd":
+            if not args:
+                session.cwd_override = None
+                cwd, source = session.effective_cwd()
+                console.print(f"[dim]Reset to {source}: {cwd}[/dim]")
+            else:
+                target = os.path.expanduser(args.strip())
+                base_cwd, _ = session.effective_cwd()
+                resolved = os.path.normpath(
+                    os.path.join(base_cwd, target) if not os.path.isabs(target) else target
+                )
+                if not os.path.isdir(resolved):
+                    console.print(f"[red]Not a directory: {resolved}[/red]")
+                else:
+                    session.cwd_override = resolved
+                    console.print(f"[dim]cwd: {resolved}[/dim]")
 
         else:
             console.print(f"[red]Unknown command: /{cmd}. Type /help for available commands.[/red]")

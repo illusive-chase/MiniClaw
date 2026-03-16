@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from copy import deepcopy
 from typing import Any, Callable
 
@@ -166,6 +167,7 @@ class Runtime:
         forked.agent = agent
 
         self.sessions[forked.id] = forked
+        forked.cwd_override = source.cwd_override
         forked.on_history_update = lambda _sid=forked.id: self.persist_session(_sid)
 
         # Copy plugctx from source
@@ -245,6 +247,7 @@ class Runtime:
                     if session.plugctx is not None
                     else []
                 ),
+                "cwd_override": session.cwd_override,
             },
         )
         self._session_manager.save(legacy, session.history)
@@ -293,6 +296,11 @@ class Runtime:
 
         session.agent = agent
         self.sessions[session.id] = session
+
+        # Restore cwd_override
+        persisted_cwd = loaded.metadata.get("cwd_override") if loaded.metadata else None
+        if persisted_cwd and os.path.isdir(persisted_cwd):
+            session.cwd_override = persisted_cwd
 
         # Restore plugctx
         loaded_contexts = loaded.metadata.get("loaded_contexts", []) if loaded.metadata else []

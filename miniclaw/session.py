@@ -108,6 +108,7 @@ class Session:
         self._lock = asyncio.Lock()
         self._current_token: CancellationToken | None = None
         self.status: str = "active"  # active | paused | archived
+        self.cwd_override: str | None = None  # Set via /cd command
 
         logger.debug(
             "[SESSION %s] init: status=%s",
@@ -192,11 +193,8 @@ class Session:
                         self.agent_config.extra.pop("_plugctx_prompt", None)
 
                     # Inject effective cwd for tools
-                    if self.plugctx is not None:
-                        project_cwd = self.plugctx.active_project_cwd()
-                        self.agent_config.extra["_effective_cwd"] = project_cwd or os.getcwd()
-                    else:
-                        self.agent_config.extra["_effective_cwd"] = os.getcwd()
+                    cwd, _ = self.effective_cwd()
+                    self.agent_config.extra["_effective_cwd"] = cwd
 
                     async for event in self.agent.process(
                         pending_text,
@@ -284,6 +282,16 @@ class Session:
             self._current_token = None
 
     # --- Sub-agent message formatting ---
+
+    def effective_cwd(self) -> tuple[str, str]:
+        """Return (effective_cwd_path, source_label)."""
+        if self.cwd_override:
+            return self.cwd_override, "override"
+        if self.plugctx is not None:
+            project_cwd = self.plugctx.active_project_cwd()
+            if project_cwd:
+                return project_cwd, "project context"
+        return os.getcwd(), "default"
 
     @staticmethod
     def _format_sub_agent_message(metadata: dict) -> str:
