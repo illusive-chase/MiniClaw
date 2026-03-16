@@ -41,6 +41,7 @@
 │  Manages:        session lifecycle (create, fork, attach, persist)       │
 │                  agent registry ("native" -> factory, "ccagent" -> ...)  │
 │                  two-phase session init (Session → RuntimeContext → Agent)│
+│                  auto-persist on history update                          │
 │                  listener supervision (restart with backoff)             │
 │                  graceful shutdown (drain + persist)                     │
 └─────────────────────────────────────────────────────────────────────────┘
@@ -58,8 +59,8 @@ Session is the central entity. It owns conversation state and coordinates agent 
 Session
 ├── id: str                            # "20260315_181530_abc123"
 ├── metadata: SessionMetadata
-│   ├── created_at: datetime
-│   ├── updated_at: datetime
+│   ├── created_at: str                # ISO 8601
+│   ├── updated_at: str                # ISO 8601
 │   ├── name: str | None
 │   ├── forked_from: str | None        # source session id
 │   └── tags: dict[str, str]
@@ -70,13 +71,14 @@ Session
 ├── agent: AgentProtocol               # BOUND by Runtime, not owned
 ├── primary_channel: Channel | None    # who can send input
 ├── observers: list[ObserverBinding]   # read-only watchers
+├── on_history_update: Callable | None # auto-persist callback, set by Runtime
 │
 ├── _input_queue: asyncio.Queue[InputMessage]  # push-based input
 ├── runtime_context: RuntimeContext | None     # bridge to Runtime for sub-agents
 │
 ├── _lock: asyncio.Lock                # one message at a time
 ├── _current_token: CancellationToken | None
-└── status: ACTIVE | PAUSED | ARCHIVED
+└── status: str                        # "active" | "paused" | "archived"
 ```
 
 ### 3.2 Ownership Rules
@@ -107,15 +109,16 @@ async def run(self) -> AsyncIterator[tuple[AsyncIterator[AgentEvent], str]]:
     while True:
         msg = await self._input_queue.get()
         if msg.source == "sub_agent" and msg.metadata:
-            self._inject_sub_agent_notification(msg.metadata)
-        stream = self._process(msg.text if msg.source != "sub_agent"
-                               else "[System] Sub-agent event received.")
+            process_text = self._format_sub_agent_message(msg.metadata)
+        else:
+            process_text = msg.text
+        stream = self._process(process_text)
         yield stream, msg.source
 ```
 
 This enables:
 - **Multi-source input**: user messages, sub-agent notifications, and system events all flow through the same queue
-- **Notification injection**: sub-agent events are injected as synthetic tool-call/result pairs in history before processing
+- **Notification formatting**: sub-agent events are formatted as descriptive user-role text before processing
 - **Decoupled consumption**: Listeners own the `run()` consumer loop, not Session
 
 ### 3.4 Core Method: `_process()`
@@ -124,11 +127,12 @@ This enables:
 async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
     """Internal: process a single message through the bound agent.
 
-    Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent.
+    Yields: TextDelta, ActivityEvent, InteractionRequest, InterruptedEvent, UsageEvent.
     Consumes internally: HistoryUpdate, SessionControl.
     """
     token = CancellationToken()
     self._current_token = token
+    interrupted_text = None
 
     try:
         async with self._lock:
@@ -136,19 +140,25 @@ async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
 
             # Restart loop: handles SessionControl("plan_execute")
             while pending_text is not None:
+                interrupted_text = pending_text
                 restart_text = None
 
                 async for event in self.agent.process(
-                    pending_text, self.history, self.agent_config, token
+                    pending_text, list(self.history), self.agent_config, token
                 ):
                     if isinstance(event, HistoryUpdate):
                         self.history = event.history
+                        self.metadata.touch()
+                        if self.on_history_update is not None:
+                            self.on_history_update()
 
                     elif isinstance(event, SessionControl):
                         if event.action == "plan_execute":
                             self.history = []
                             await self.agent.reset()
-                            restart_text = event.payload["plan_content"]
+                            restart_text = event.payload.get(
+                                "plan_content", "Execute the plan."
+                            )
                             break
 
                     else:
@@ -159,7 +169,18 @@ async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
                 pending_text = restart_text
 
     except CancelledError:
-        yield InterruptedEvent()
+        # Record interrupted prompt + marker in history
+        if interrupted_text is not None:
+            self.history.append(ChatMessage(role="user", content=interrupted_text))
+            self.history.append(
+                ChatMessage(role="assistant", content="[interrupted by user]")
+            )
+            self.metadata.touch()
+            if self.on_history_update is not None:
+                self.on_history_update()
+        event = InterruptedEvent(partial_history=list(self.history))
+        await self._broadcast(event)
+        yield event
 
     finally:
         self._current_token = None
@@ -167,23 +188,43 @@ async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
 
 The backward-compat `process()` wrapper delegates to `_process()` directly (bypasses queue).
 
-### 3.5 Sub-Agent Notification Injection
+### 3.5 Sub-Agent Message Formatting
 
-When a sub-agent event arrives, `_inject_sub_agent_notification()` appends a synthetic tool-call/result pair to history:
+When a sub-agent event arrives via the input queue, `_format_sub_agent_message()` converts the metadata into a descriptive user-role text message:
 
 ```python
-def _inject_sub_agent_notification(self, metadata: dict) -> None:
-    call_id = f"sub_agent_event_{len(self.history)}"
-    self.history.append(ChatMessage(
-        role="assistant", content=None,
-        tool_calls=[ToolCall(id=call_id, name="sub_agent_event", arguments=event_data)]
-    ))
-    self.history.append(ChatMessage(
-        role="tool", content=notification_text, tool_call_id=call_id
-    ))
+@staticmethod
+def _format_sub_agent_message(metadata: dict) -> str:
+    """Build a single user-role message from sub-agent notification metadata."""
+    event_type = metadata.get("event_type", "")
+    session_id = metadata.get("session_id", "unknown")
+
+    if event_type == "permission_required":
+        interaction_id = metadata.get("interaction_id", "")
+        tool_name = metadata.get("tool_name", "")
+        notification_text = metadata.get("notification_text", "")
+        return (
+            f"[Sub-agent notification] session_id={session_id}\n"
+            f"Permission required — interaction_id={interaction_id}, "
+            f"tool={tool_name}\n"
+            f"tool_input: {notification_text}\n"
+            f"Use reply_agent to allow/deny. "
+            f"For AskUserQuestion, include answers."
+        )
+
+    if event_type == "turn_complete":
+        notification_text = metadata.get("notification_text", "")
+        return (
+            f"[Sub-agent notification] session_id={session_id}\n"
+            f"Turn complete. Response:\n{notification_text}\n"
+        )
+
+    # Fallback
+    notification_text = metadata.get("notification_text", "Sub-agent event.")
+    return f"[Sub-agent notification] session_id={session_id}\n{notification_text}"
 ```
 
-This ensures the agent sees sub-agent events as part of its conversation context and can react accordingly (e.g., calling `reply_agent` to approve a permission).
+This formatted text is then processed by the agent as a regular user message, allowing it to see sub-agent events and react accordingly (e.g., calling `reply_agent` to approve a permission).
 
 ### 3.6 Interrupt
 
@@ -203,7 +244,9 @@ async def _broadcast(self, event: AgentEvent) -> None:
     """Push event to all observer channels."""
     for binding in self.observers:
         try:
-            await binding.queue.put(event)
+            binding.queue.put_nowait(event)
+        except asyncio.QueueFull:
+            pass  # drop event rather than block
         except Exception:
             pass  # observer failure doesn't affect primary
 ```
@@ -214,8 +257,8 @@ Each observer has an `ObserverBinding`:
 @dataclass
 class ObserverBinding:
     channel: Channel
-    queue: asyncio.Queue[AgentEvent]
-    task: asyncio.Task  # reads queue, calls channel.on_observe()
+    queue: asyncio.Queue[AgentEvent]  # maxsize=1000
+    task: asyncio.Task | None = None
 ```
 
 ### 3.8 Fork
@@ -230,22 +273,23 @@ See `Runtime.fork_session()` in §8.2 for the full implementation.
 ### 3.9 Attach / Detach Observer
 
 ```python
-def attach_observer(self, channel: Channel) -> None:
-    queue = asyncio.Queue()
+def attach_observer(self, channel: Channel) -> ObserverBinding:
+    queue = asyncio.Queue(maxsize=1000)
 
-    async def observer_loop():
-        # Replay history first
+    async def _observer_loop():
         await channel.replay(self.history)
-        # Then stream live events
-        await channel.on_observe(queue_to_async_iter(queue))
+        await channel.on_observe(_queue_iter(queue))
 
-    task = asyncio.create_task(observer_loop())
-    self.observers.append(ObserverBinding(channel, queue, task))
+    task = asyncio.create_task(_observer_loop())
+    binding = ObserverBinding(channel=channel, queue=queue, task=task)
+    self.observers.append(binding)
+    return binding
 
 def detach_observer(self, channel: Channel) -> None:
     for binding in self.observers:
         if binding.channel is channel:
-            binding.task.cancel()
+            if binding.task is not None:
+                binding.task.cancel()
             self.observers.remove(binding)
             break
 ```
@@ -257,9 +301,13 @@ def detach_observer(self, channel: Channel) -> None:
 ### 4.1 Protocol Definition
 
 ```python
+@runtime_checkable
 class AgentProtocol(Protocol):
-    agent_type: str                    # "native", "ccagent"
-    default_model: str
+    @property
+    def agent_type(self) -> str: ...       # "native", "ccagent"
+
+    @property
+    def default_model(self) -> str: ...
 
     async def process(
         self,
@@ -287,6 +335,7 @@ AgentEvent = Union[
     HistoryUpdate,        # updated history — session-internal, never forwarded
     SessionControl,       # control commands — session-internal, never forwarded
     InterruptedEvent,     # processing was interrupted — forwarded to channel
+    UsageEvent,           # cumulative token usage — forwarded to channel
 ]
 ```
 
@@ -297,22 +346,24 @@ AgentEvent = Union[
 | TextDelta | Yes | Yes | — |
 | ActivityEvent | Yes | Yes | — |
 | InteractionRequest | Yes (primary resolves) | Yes (display only, auto-resolve) | — |
-| HistoryUpdate | No | No | `self.history = event.history` |
+| HistoryUpdate | No | No | `self.history = event.history`, `on_history_update()` |
 | SessionControl | No | No | Handle action (e.g., plan_execute restart) |
 | InterruptedEvent | Yes | Yes | — |
+| UsageEvent | Yes | Yes | — |
 
 ### 4.3 AgentConfig
 
 ```python
 @dataclass
 class AgentConfig:
-    model: str                              # "claude-sonnet-4-6"
-    system_prompt: str                      # custom system prompt
+    model: str = ""
+    system_prompt: str = ""
     tools: list[str] | None = None          # allowed tool names (None = all)
     max_iterations: int = 30                # tool loop cap
     memory_enabled: bool = True
     thinking: bool = False
     effort: str = "medium"                  # "low" / "medium" / "high"
+    temperature: float = 0.7
     extra: dict = field(default_factory=dict)  # agent-type-specific overrides
 ```
 
@@ -355,6 +406,10 @@ class SessionControl:
 @dataclass
 class InterruptedEvent:
     partial_history: list[ChatMessage] | None = None
+
+@dataclass
+class UsageEvent:
+    usage: UsageStats        # cumulative token counts and cost
 ```
 
 ActivityEvent and InteractionRequest retain their existing definitions from the current codebase.
@@ -366,17 +421,20 @@ ActivityEvent and InteractionRequest retain their existing definitions from the 
 ### 5.1 Agent (native)
 
 ```
-Agent.process(text, history, config, token):
+NativeAgent.process(text, history, config, token):
 │
-├─ Build system prompt (config.system_prompt + memory + tool list + datetime)
+├─ Build system prompt (config.system_prompt + tool list + memory context)
 ├─ Build messages: [system, *history, user(text)]
-├─ tool_specs = registry.specs(filter=config.tools)
+├─ tool_specs = registry.all_specs()
+├─ turn_usage = UsageStats()
 │
 ├─ TOOL LOOP (max config.max_iterations):
 │   ├─ token.check()                          ← checkpoint 1
-│   ├─ provider.chat_stream(messages, specs, config.model)
-│   │   ├─ str chunks → yield TextDelta
+│   ├─ provider.chat_stream(messages, specs, config.model, config.temperature)
+│   │   ├─ str chunks → yield TextDelta (with block-separation logic)
 │   │   └─ ChatResponse → response
+│   │
+│   ├─ turn_usage.accumulate_token_usage(response.usage)
 │   │
 │   ├─ if response.tool_calls:
 │   │   ├─ append assistant message to messages
@@ -389,9 +447,12 @@ Agent.process(text, history, config, token):
 │   │   └─ continue loop
 │   │
 │   └─ else (text-only):
-│       ├─ append assistant message
-│       ├─ yield HistoryUpdate(messages[1:])   ← strip system msg
-│       └─ return
+│       └─ break
+│
+├─ Build updated history:
+│   updated = [*history, user_msg, *new_messages, assistant(reply)]
+├─ yield UsageEvent(turn_usage)
+├─ yield HistoryUpdate(updated)
 │
 ├─ Stateless properties:
 │   reset()          → no-op
@@ -408,41 +469,64 @@ The tool registry may include session management tools (`launch_agent`, `reply_a
 ```
 CCAgent.process(text, history, config, token):
 │
-├─ client = get_or_create_sdk_client(config, self._sdk_session_id)
-├─ queue = asyncio.Queue()
+├─ sdk_session_id = self._sdk_session_id or _extract_sdk_session_id(history)
+├─ options = _build_options(sdk_session_id, model, client_key)
+├─ output_queue = asyncio.Queue()
+├─ turn_usage = UsageStats()
 │
 ├─ BACKGROUND (_run_sdk):
-│   ├─ can_use_tool callback:
-│   │   ├─ Create InteractionRequest
-│   │   ├─ queue.put(("interaction", request))
-│   │   ├─ await request.future            ← blocks SDK
-│   │   └─ If plan_execute: queue.put(("plan_execute", ...)) + interrupt SDK
-│   ├─ client.query(text)
-│   ├─ async for msg in receive_response():
-│   │   ├─ TextBlock    → queue.put(("text", chunk))
-│   │   ├─ ToolUseBlock → queue.put(("activity", START))
-│   │   ├─ ToolResult   → queue.put(("activity", FINISH|FAILED))
-│   │   └─ TaskStarted  → queue.put(("activity", AGENT_START))
-│   └─ queue.put(("done", None))
+│   ├─ async with ClaudeSDKClient(options) as client:
+│   │   ├─ client.query(text)
+│   │   └─ async for message in client.receive_response():
+│   │       └─ output_queue.put(("sdk", message))
+│   └─ output_queue.put(("done", None))
 │
-├─ MAIN LOOP (consume queue):
-│   ├─ "text"         → yield TextDelta
-│   ├─ "activity"     → yield ActivityEvent
+├─ _make_can_use_tool callback (bound to client_key):
+│   ├─ Determine InteractionType:
+│   │   ├─ AskUserQuestion   → ASK_USER
+│   │   ├─ ExitPlanMode      → PLAN_APPROVAL
+│   │   └─ Other             → PERMISSION
+│   ├─ Create InteractionRequest with asyncio Future
+│   ├─ output_queue.put(("interaction", request))
+│   ├─ await future                       ← blocks SDK
+│   ├─ If PLAN_APPROVAL + clear_context:
+│   │   └─ output_queue.put(("plan_action", ...)) + return Deny(interrupt=True)
+│   └─ Return Allow or Deny based on response
+│
+├─ MAIN LOOP (consume output_queue):
+│   ├─ "sdk":
+│   │   ├─ SystemMessage(init) → capture session_id
+│   │   ├─ TaskStartedMessage  → yield ActivityEvent(AGENT, START)
+│   │   ├─ TaskProgressMessage → yield ActivityEvent(AGENT, PROGRESS)
+│   │   ├─ TaskNotificationMsg → yield ActivityEvent(AGENT, FINISH|FAILED)
+│   │   ├─ AssistantMessage:
+│   │   │   ├─ TextBlock    → yield TextDelta (with block-separation logic)
+│   │   │   ├─ ToolUseBlock → yield ActivityEvent(TOOL, START)
+│   │   │   └─ ThinkingBlock → ignored
+│   │   ├─ UserMessage:
+│   │   │   └─ ToolResultBlock → yield ActivityEvent(TOOL, FINISH|FAILED)
+│   │   └─ ResultMessage → turn_usage.accumulate(message)
 │   ├─ "interaction"  → yield InteractionRequest
-│   ├─ "plan_execute" → yield SessionControl("plan_execute", payload); break
+│   ├─ "plan_action"  → yield SessionControl("plan_execute", payload); break
 │   ├─ "done"         → break
 │   └─ "error"        → raise
 │
-├─ self._sdk_session_id = client.session_id
-├─ yield HistoryUpdate(visible_history)
+├─ Track SDK session ID: self._sdk_session_id = new_session_id
+├─ Build visible history (strip session markers)
+├─ Inject session marker for SDK session tracking:
+│   [system("__cc_session__:<id>"), ...visible_history, user, assistant]
+├─ yield UsageEvent(turn_usage)
+├─ yield HistoryUpdate(updated_history)
 │
 ├─ Stateful properties:
-│   reset()           → close SDK client, clear _sdk_session_id
+│   reset()           → clear _sdk_session_id
 │   serialize_state() → {"sdk_session_id": self._sdk_session_id}
 │   restore_state()   → self._sdk_session_id = state["sdk_session_id"]
 │   on_fork()         → {} (fresh SDK, don't reuse session)
-│   shutdown()        → close all SDK clients
+│   shutdown()        → no-op
 ```
+
+**SDK session markers:** CCAgent persists the SDK session ID by injecting a `system` message with prefix `__cc_session__:` into the history. On restore, it extracts the session ID from this marker to resume the SDK session.
 
 ---
 
@@ -463,6 +547,7 @@ class Channel(ABC):
           ActivityEvent       → status display (footer, indicators)
           InteractionRequest  → prompt user, call request.resolve()
           InterruptedEvent    → display interruption notice
+          UsageEvent          → display token usage stats
         """
 
     @abstractmethod
@@ -475,18 +560,21 @@ class Channel(ABC):
         Default: same as send_stream but auto-resolve interactions.
         Override for custom observer UX.
         """
-        async def auto_resolve(source):
+        async def _auto_resolve(source):
             async for event in source:
                 if isinstance(event, InteractionRequest):
-                    event.resolve(InteractionResponse.auto_allow())
-                    yield ActivityEvent(...)  # show what was auto-resolved
+                    event.resolve(InteractionResponse(id=event.id, allow=True))
                 else:
                     yield event
-        await self.send_stream(auto_resolve(stream))
+        await self.send_stream(_auto_resolve(stream))
 
     async def replay(self, history: list[ChatMessage]) -> None:
         """Replay past history when attaching/resuming. Optional."""
         pass
+
+    def log_handler(self) -> logging.Handler | None:
+        """Return this channel's log forwarding handler, or None."""
+        return None
 ```
 
 ### 6.2 CLIChannel
@@ -494,19 +582,23 @@ class Channel(ABC):
 ```
 CLIChannel
 ├── _console: Rich Console
-├── _console_handler: RichHandler (logging)
 │
 ├── send_stream(stream):
-│   ├─ Start Rich Live panel
+│   ├─ Start Rich Live panel (8 fps)
+│   ├─ Show spinner: "Thinking..."
 │   ├─ async for event in stream:
 │   │   ├─ TextDelta        → buffer += text, re-render Markdown panel
 │   │   ├─ ActivityEvent    → tracker.apply(event), update footer
+│   │   │   (ActivityFooter shows: "Tools: 2/5 done [3s]" + per-tool status)
 │   │   ├─ InteractionRequest:
 │   │   │   ├─ Pause Live
-│   │   │   ├─ Render interaction panel (permission/question/plan)
-│   │   │   ├─ Prompt user for response
+│   │   │   ├─ Render interaction panel (dispatch by type):
+│   │   │   │   ├─ PERMISSION:    show tool/command, [1] Allow [2] Deny
+│   │   │   │   ├─ ASK_USER:      show questions + numbered options
+│   │   │   │   └─ PLAN_APPROVAL: show plan, 4 options (clear+accept, accept, manual, reject)
 │   │   │   ├─ event.resolve(response)
 │   │   │   └─ Resume Live
+│   │   ├─ UsageEvent       → append "tokens: N (Xin + Yout)" to buffer
 │   │   └─ InterruptedEvent → render "[interrupted]"
 │   └─ Stop Live, final render
 │
@@ -517,7 +609,11 @@ CLIChannel
 │   └─ For each message: render role + content in panel
 │
 └── on_observe(stream):
-    └─ Same as send_stream but interactions displayed as "[auto-allowed]"
+    ├─ Custom implementation (NOT same as send_stream):
+    │   auto-resolve interactions, lazy Live display
+    │   (Live only created when events arrive, stopped on turn end)
+    │   Prevents "infinite Thinking..." when idle
+    └─ UsageEvent/InterruptedEvent → stop Live for that turn
 
 Note: User input (prompt) is handled by CLIListener (§7.2), not
 CLIChannel. Channel is an output-only endpoint (Principle #3).
@@ -526,10 +622,10 @@ CLIChannel. Channel is an output-only endpoint (Principle #3).
 ### 6.3 FeishuChannel
 
 ```
-FeishuChannel(client, chat_id, reply_to=None)
+FeishuChannel(client, chat_id, reply_to="")
 ├── _client: lark_oapi.Client            # shared client (async API methods)
 ├── _chat_id: str                        # target chat
-├── _reply_to: str | None                # message_id for thread replies
+├── _reply_to: str                       # message_id for thread replies ("" if none)
 ├── _sent_message_id: str | None         # for progressive updates
 │
 ├── send_stream(stream):
@@ -539,8 +635,8 @@ FeishuChannel(client, chat_id, reply_to=None)
 │   ├─ For ActivityEvents: silently consumed
 │   ├─ For InterruptedEvent: append "[interrupted]"
 │   ├─ Debounced progressive update:
-│   │   ├─ First substantial text → send initial message, store _sent_message_id
-│   │   └─ Every ~3s of new text → patch message with accumulated text
+│   │   ├─ First substantial text → _send_text() as interactive card, store _sent_message_id
+│   │   └─ Every ~3s of new text → _patch_message() with accumulated text
 │   └─ Final: patch complete message (or send if none sent yet)
 │
 ├── send(text):
@@ -549,14 +645,19 @@ FeishuChannel(client, chat_id, reply_to=None)
 ├── replay(history):
 │   └─ No-op (silent resume)
 │
+├── _build_card(text) → str:
+│   └─ JSON interactive card wrapping text as markdown element
+│       (Feishu PATCH API only supports interactive cards)
+│
 ├── _send_text(text) → str | None:
-│   ├─ Uses async lark_oapi methods (areply, acreate)
-│   ├─ If _reply_to: ReplyMessageRequest → thread reply
-│   ├─ Else: CreateMessageRequest → new message to chat
+│   ├─ Builds interactive card via _build_card()
+│   ├─ If _reply_to: ReplyMessageRequest → thread reply (areply)
+│   ├─ Else: CreateMessageRequest → new message to chat (acreate)
+│   ├─ msg_type = "interactive" (card, not plain text)
 │   └─ Returns message_id on success for progressive updates
 │
 └── _patch_message(message_id, text):     # for progressive updates
-    └─ PatchMessageRequest via async apatch
+    └─ PatchMessageRequest via async apatch with interactive card content
 ```
 
 **Async API methods:** The `lark_oapi` client provides async variants of its
@@ -569,36 +670,45 @@ substantial text, then debounce-patches every ~3 seconds as new text arrives.
 The final patch ensures the complete text is displayed. For short responses,
 only one message is sent.
 
+**Interactive cards:** All messages are sent as interactive cards (`msg_type="interactive"`)
+rather than plain text, because the Feishu PATCH API only supports updating
+interactive card messages.
+
 ### 6.4 SubAgentDriver
 
 SubAgentDriver is a dual-role component: Channel for a child session and notifier for a parent session. It lives at `miniclaw/subagent_driver.py` (not in `channels/` to avoid circular imports).
 
 ```
-SubAgentDriver(session_id, parent_session, allowed_tools, child_session)
+SubAgentDriver(session_id, parent_session, child_session)
 ├── _session_id: str
 ├── _parent_session: Session          # receives notifications
-├── _allowed_tools: set[str]          # auto-approved tools
 ├── _child_session: Session           # drives this session
 ├── _pending_interactions: dict       # interaction_id -> InteractionRequest
 ├── _status: str                      # running | completed | failed | interrupted
 ├── _result: str | None               # final text output
+├── _task: asyncio.Task | None
 │
 ├── send_stream(stream):              # Channel interface
 │   ├─ Collect TextDelta chunks → buffer
 │   ├─ InteractionRequest:
-│   │   ├─ If tool_name in allowed_tools → auto-resolve(allow)
-│   │   └─ Else → store in _pending_interactions, notify parent
+│   │   └─ Store in _pending_interactions, notify parent
+│   │     (all interactions forwarded — no auto-resolution)
 │   ├─ InterruptedEvent → set status=interrupted, notify parent
+│   ├─ UsageEvent → silently consumed
+│   ├─ ActivityEvent → silently consumed
 │   └─ Capture final text as result
 │
 ├── send(text): no-op
 │
 ├── _handle_interaction(request):
-│   ├─ Auto-resolve if tool in allowed_tools
-│   └─ Otherwise: store pending, parent.submit(source="sub_agent", metadata=...)
+│   ├─ Store in _pending_interactions
+│   └─ _notify_parent("permission_required", tool_input_json,
+│        extra={session_id, interaction_id, tool_name})
 │
-├── resolve_interaction(id, action, reason):
-│   └─ Pop from _pending, resolve with allow/deny → unblocks child agent
+├── resolve_interaction(id, action, reason, answers):
+│   ├─ Pop from _pending_interactions
+│   ├─ Build InteractionResponse (allow/deny, optional answers for ASK_USER)
+│   └─ request.resolve(response) → unblocks child agent
 │
 ├── _notify_parent(event_type, text, extra):
 │   └─ parent.submit(text, source="sub_agent", metadata={event_type, ...})
@@ -608,8 +718,10 @@ SubAgentDriver(session_id, parent_session, allowed_tools, child_session)
 │
 ├── _run():                           # background loop
 │   ├─ async for stream, source in child_session.run():
-│   │   └─ await self.send_stream(stream)
-│   └─ On completion: set status=completed, notify parent with result
+│   │   ├─ await self.send_stream(stream)
+│   │   └─ if result: _notify_parent("turn_complete", result)
+│   └─ On clean exit: set status=completed
+│   └─ On error: set status=failed, notify parent("failed")
 │
 ├── status → str (property)
 ├── result → str | None (property)
@@ -617,10 +729,10 @@ SubAgentDriver(session_id, parent_session, allowed_tools, child_session)
 ```
 
 **Key behaviors:**
-- InteractionRequest for tool in `allowed_tools` → auto-resolve (allow)
-- InteractionRequest for other tools → store in `_pending_interactions`, notify parent via `parent.submit(source="sub_agent")`
-- On completion → notify parent with result text
+- All InteractionRequests are forwarded to the parent session via `_notify_parent("permission_required", ...)`
+- Parent agent sees the notification as a formatted text message (§3.5), calls `reply_agent` tool
 - `resolve_interaction()` resolves the InteractionRequest's `_future`, unblocking the child agent's `can_use_tool` callback
+- On each turn completion, notifies parent with `"turn_complete"` and the result text
 
 ---
 
@@ -658,7 +770,9 @@ CLIListener.run(runtime):
 │   ├─ text = await prompt_session.prompt_async()
 │   │
 │   ├─ if command:
+│   │   ├─ /help        → show all available commands
 │   │   ├─ /reset       → session.clear_history()
+│   │   ├─ /sessions    → runtime.list_persisted_sessions()
 │   │   ├─ /resume <id> → session = runtime.restore_session(id)
 │   │   │                  session.bind_primary(cli_channel)
 │   │   │                  await cli_channel.replay(session.history)
@@ -666,10 +780,12 @@ CLIListener.run(runtime):
 │   │   │                  session.bind_primary(cli_channel)
 │   │   ├─ /attach <id> → runtime.attach_observer(id, cli_channel)
 │   │   ├─ /detach      → runtime.detach_observer(current_observed_id, cli_channel)
-│   │   ├─ /sessions    → runtime.list_sessions()
 │   │   ├─ /model [name]→ session.agent_config.model = name
 │   │   ├─ /effort [lvl]→ session.agent_config.effort = level
-│   │   └─ /cost        → session.usage_summary()
+│   │   ├─ /cost        → session.agent.get_usage() → display stats
+│   │   ├─ /rename <n>  → session.metadata.name = n
+│   │   ├─ /logging <l> → set console log level
+│   │   └─ /quit, /exit, /q → exit
 │   │
 │   └─ else (regular message):
 │       ├─ response_done.clear()
@@ -704,7 +820,7 @@ FeishuListener.run(runtime):
 ├─ consumer_tasks: dict[str, asyncio.Task]    # per session
 ├─ _shutdown_event: asyncio.Event
 │
-├─ handle_message(ctx, event):               # ⚠ runs on SDK thread
+├─ handle_message(event):                    # ⚠ runs on SDK thread
 │   ├─ Parse text, sender_id, chat_id, message_id
 │   ├─ Strip @bot mentions from text (for group chats)
 │   ├─ Skip non-text and empty messages
@@ -721,9 +837,14 @@ FeishuListener.run(runtime):
 │   ├─ ensure_consumer(session, get_channel=lambda: latest_channels[sid])
 │   └─ session.submit(text, "user")
 │
-├─ Start WebSocket in daemon thread:
-│   ├─ ws_client = lark.ws.Client(app_id, app_secret, event_handler=handler)
-│   ├─ ws_thread = Thread(target=ws_client.start, daemon=True)
+├─ Build and start ws.Client inside daemon thread:
+│   ├─ def _run_ws():
+│   │   ├─ new_loop = asyncio.new_event_loop()
+│   │   ├─ asyncio.set_event_loop(new_loop)
+│   │   ├─ Patch lark_oapi.ws.client.loop = new_loop  # avoid main loop capture
+│   │   ├─ ws_client = lark.ws.Client(app_id, app_secret, event_handler)
+│   │   └─ ws_client.start()
+│   ├─ ws_thread = Thread(target=_run_ws, daemon=True)
 │   ├─ ws_thread.start()
 │   └─ await _shutdown_event.wait()          # block until shutdown
 │
@@ -740,6 +861,12 @@ FeishuListener.run(runtime):
 forever (internal `loop.run_until_complete(_select())` that sleeps infinitely).
 A daemon thread dies automatically with the process. Using `run_in_executor`
 would work but ties up a thread-pool slot indefinitely.
+
+**Event loop isolation:** The ws.Client is constructed *inside* the daemon thread
+function `_run_ws()`, which creates its own asyncio event loop. This is necessary
+because the lark SDK caches a module-level `loop` variable at import time. The
+thread patches `lark_oapi.ws.client.loop` to its local loop so `start()` uses the
+correct one rather than the already-running main loop.
 
 **@mention stripping:** In group chats, Feishu delivers the bot-trigger text
 as `"@_user_1 <actual message>"`. The listener strips the mention prefix
@@ -759,9 +886,9 @@ uses the most recent channel for a given session.
 ```python
 class Runtime:
     sessions: dict[str, Session]
-    session_manager: SessionManager          # persistence
-    agent_registry: dict[str, Callable]      # "native" -> factory(config, runtime_context)
-    listeners: list[Listener]
+    _session_manager: SessionManager          # persistence
+    _agent_registry: dict[str, Callable]      # "native" -> factory(config, runtime_context)
+    _listeners: list[Listener]
     _listener_tasks: list[asyncio.Task]
     _shutting_down: bool
 ```
@@ -770,11 +897,17 @@ class Runtime:
 
 ```python
 # Create (two-phase init)
-def create_session(self, agent_type: str, config: AgentConfig) -> Session:
-    sid = generate_session_id()
+def create_session(
+    self,
+    agent_type: str,
+    config: AgentConfig,
+    session_id: str | None = None,
+    metadata: SessionMetadata | None = None,
+) -> Session:
+    sid = session_id or generate_session_id()
 
     # Phase 1: Session with placeholder agent
-    session = Session(id=sid, agent=None, agent_config=config, ...)
+    session = Session(id=sid, agent=None, agent_config=config, metadata=metadata)
 
     # Phase 2: RuntimeContext
     ctx = RuntimeContext(self, session)
@@ -784,6 +917,8 @@ def create_session(self, agent_type: str, config: AgentConfig) -> Session:
     agent = self.create_agent(agent_type, config, runtime_context=ctx)
     session.agent = agent
 
+    # Auto-persist on every history update
+    session.on_history_update = lambda: self.persist_session(sid)
     self.sessions[session.id] = session
     return session
 
@@ -814,6 +949,7 @@ async def fork_session(
     agent = self.create_agent(agent_type, config, runtime_context=ctx)
     await agent.restore_state(forked_agent_state)
     forked.agent = agent
+    forked.on_history_update = lambda: self.persist_session(forked.id)
     self.sessions[forked.id] = forked
     return forked
 
@@ -848,11 +984,11 @@ def persist_session(self, session_id: str) -> None:
             "tags": dict(session.metadata.tags),
         },
     )
-    self.session_manager.save(legacy, session.history)
+    self._session_manager.save(legacy, session.history)
 
 # Restore session from disk (two-phase init)
 async def restore_session(self, session_id: str) -> Session:
-    loaded = self.session_manager.load_session(session_id)
+    loaded = self._session_manager.load_session(session_id)
     history = SessionManager.deserialize_messages(loaded.messages)
     agent_type = loaded.agent_type or "native"
     config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
@@ -866,6 +1002,7 @@ async def restore_session(self, session_id: str) -> Session:
         await agent.restore_state(loaded.agent_state)
     session.agent = agent
 
+    session.on_history_update = lambda: self.persist_session(session.id)
     self.sessions[session.id] = session
     return session
 ```
@@ -877,7 +1014,7 @@ async def run(self) -> None:
     """Start runtime. Supervise all listeners. Block until shutdown."""
     self._listener_tasks = [
         asyncio.create_task(self._supervise(listener))
-        for listener in self.listeners
+        for listener in self._listeners
     ]
     try:
         await asyncio.gather(*self._listener_tasks)
@@ -903,7 +1040,7 @@ async def _supervise(self, listener: Listener) -> None:
 async def _shutdown(self) -> None:
     """Graceful shutdown: stop listeners, persist sessions, close agents."""
     self._shutting_down = True
-    for listener in self.listeners:
+    for listener in self._listeners:
         await listener.shutdown()
     for session in self.sessions.values():
         self.persist_session(session.id)
@@ -921,11 +1058,14 @@ class RuntimeContext:
         self._parent = parent_session
         self._drivers: dict[str, SubAgentDriver] = {}
 
-    async def spawn(self, agent_type, task, config=None, allowed_tools=None) -> str:
+    async def spawn(self, agent_type, task) -> str:
         """Create child session → SubAgentDriver → submit task → start loop → return session_id."""
 
-    def resolve(self, session_id, interaction_id, action, reason=None) -> str:
-        """Find driver → resolve_interaction() → unblocks child agent."""
+    def resolve(self, session_id, interaction_id, action, reason=None, answers=None) -> str:
+        """Find driver → resolve_interaction() → unblocks child agent.
+
+        answers: optional dict for AskUserQuestion interactions.
+        """
 
     async def send(self, session_id, text) -> str:
         """Submit follow-up message to child session."""
@@ -959,6 +1099,9 @@ Agent's next token.check() raises CancelledError
        ▼
 Session._process() catches CancelledError
        │
+       ├─ Append interrupted prompt + "[interrupted by user]" to history
+       ├─ Touch metadata, trigger on_history_update
+       │
        ▼
 yield InterruptedEvent(partial_history)
        │
@@ -972,7 +1115,7 @@ Session lock released, ready for next message
 CancellationToken is cooperative. Checkpoints in the agent:
 
 | Checkpoint | Location | What it prevents |
-|------------|----------|-----------------|
+|------------|----------|--------------------|
 | Before provider.chat() | Start of each tool loop iteration | Unnecessary LLM call |
 | Before tool.execute() | Before each tool execution | Unnecessary tool work |
 | Between stream chunks | During streaming (optional) | Long stream responses |
@@ -985,10 +1128,10 @@ CancellationToken is cooperative. Checkpoints in the agent:
 
 ```
 Parent agent calls launch_agent tool:
-  → LaunchAgentTool.execute(type="ccagent", task="...", allowed_tools=["Bash", "Read"])
+  → LaunchAgentTool.execute(type="ccagent", task="...")
   → RuntimeContext.spawn():
-      1. runtime.create_session("ccagent", config) → child_session
-      2. SubAgentDriver(session_id, parent, allowed_tools, child_session)
+      1. runtime.create_session("ccagent", AgentConfig()) → child_session
+      2. SubAgentDriver(session_id, parent, child_session)
       3. child_session.bind_primary(driver)
       4. child_session.submit(task, "user")
       5. driver.start() → asyncio.create_task(driver._run())
@@ -998,7 +1141,7 @@ Parent agent calls launch_agent tool:
 ### 10.2 Permission Flow
 
 ```
-Child CCAgent needs to run a tool not in allowed_tools:
+Child CCAgent needs to run a tool:
   │
   ▼
 CCAgent.can_use_tool callback → InteractionRequest
@@ -1008,44 +1151,45 @@ SubAgentDriver.send_stream() receives InteractionRequest
   │
   ▼
 driver._handle_interaction(request):
-  ├─ tool_name in allowed_tools? → auto-resolve(allow), return
-  └─ else:
-      ├─ _pending_interactions[request.id] = request
-      └─ _notify_parent("permission_required", text, metadata)
-            │
-            ▼
-      parent_session.submit(source="sub_agent", metadata={...})
-            │
-            ▼
-      Parent session._inject_sub_agent_notification(metadata)
-            │
-            ▼
-      Parent agent sees notification in history, calls reply_agent tool
-            │
-            ▼
-      ReplyAgentTool.execute() → RuntimeContext.resolve()
-            │
-            ▼
-      driver.resolve_interaction(id, "allow") → request.resolve(response)
-            │
-            ▼
-      CCAgent.can_use_tool callback unblocks → proceeds with tool
+  ├─ _pending_interactions[request.id] = request
+  └─ _notify_parent("permission_required", tool_input_json,
+        extra={session_id, interaction_id, tool_name})
+        │
+        ▼
+  parent_session.submit(source="sub_agent", metadata={...})
+        │
+        ▼
+  Parent session._format_sub_agent_message(metadata) → text
+        │
+        ▼
+  Parent agent sees formatted text as user message, calls reply_agent tool
+        │
+        ▼
+  ReplyAgentTool.execute() → RuntimeContext.resolve()
+        │
+        ▼
+  driver.resolve_interaction(id, "allow") → request.resolve(response)
+        │
+        ▼
+  CCAgent.can_use_tool callback unblocks → proceeds with tool
 ```
 
-### 10.3 Completion
+### 10.3 Turn Completion
 
 ```
-Child session finishes processing (no more items in queue):
+Child session finishes processing a turn:
   │
   ▼
-SubAgentDriver._run() exits the async for loop
+SubAgentDriver.send_stream() captures final text as result
   │
   ▼
-driver._status = "completed"
-driver._notify_parent("completed", result_text)
+SubAgentDriver._run() loop iteration ends
   │
   ▼
-Parent agent sees completion notification, can use the result
+driver._notify_parent("turn_complete", result_text)
+  │
+  ▼
+Parent agent sees notification, can use the result or send follow-up
 ```
 
 ### 10.4 Cancellation
@@ -1089,7 +1233,7 @@ Parent agent calls cancel_agent tool:
 5. When Feishu user sends next message:
    a. Session B processes → events yielded to FeishuChannel
    b. Same events broadcast to CLIChannel (observer)
-   c. CLI renders in real-time (read-only)
+   c. CLI renders in real-time (read-only, lazy Live display)
 6. Developer sees everything but cannot send messages
 7. To interact: /detach + /fork session_B
 ```
@@ -1099,20 +1243,17 @@ Parent agent calls cancel_agent tool:
 ```
 1. Feishu user sends complex task to session_A (agent: native)
 2. NativeAgent decides to delegate: calls launch_agent tool
-   → type="ccagent", task="Implement feature X", allowed_tools=["Bash", "Read", "Write"]
+   → type="ccagent", task="Implement feature X"
 3. RuntimeContext.spawn():
    a. Creates session_C (agent: ccagent)
    b. Creates SubAgentDriver (channel for C, notifier for A)
    c. Starts background loop
 4. CCAgent in session_C works autonomously:
-   a. Reads files, writes code — auto-approved (in allowed_tools)
-   b. Needs to run git push — NOT in allowed_tools → permission forwarded to A
-5. Parent session_A receives notification via submit(source="sub_agent")
-   → Agent sees sub_agent_event in history
-   → Calls reply_agent(session_id=C, interaction_id=..., action="allow")
-6. CCAgent in session_C continues, completes task
-7. Parent session_A receives completion notification with result
-8. Developer on CLI: /attach session_C to inspect the background work
+   a. All tool calls → forwarded to parent as permission_required
+   b. Parent agent sees formatted notification text, calls reply_agent
+5. CCAgent in session_C completes a turn:
+   → Parent receives "turn_complete" notification with result text
+6. Developer on CLI: /attach session_C to inspect the background work
 ```
 
 ---
@@ -1130,11 +1271,11 @@ Parent agent calls cancel_agent tool:
   "agent_config": {
     "model": "claude-sonnet-4-6",
     "system_prompt": "You are a helpful assistant.",
-    "tools": ["shell", "file_read", "file_write", "grep", "glob"],
+    "tools": null,
     "max_iterations": 30,
     "memory_enabled": true,
-    "thinking": true,
-    "effort": "high",
+    "thinking": false,
+    "effort": "medium",
     "temperature": 0.7,
     "extra": {}
   },
@@ -1173,6 +1314,10 @@ are kept for old JSON files. New fields (`agent_type`, `agent_config`, `agent_st
 and restored like any other session. The `SubAgentDriver` connection is transient
 (not persisted) — it exists only during the runtime session.
 
+**Auto-persist:** Sessions are automatically persisted on every `HistoryUpdate` event
+via the `on_history_update` callback set by Runtime during session creation. This
+ensures conversation state is saved incrementally, not just on shutdown.
+
 ---
 
 ## 13. Extension Guide
@@ -1186,8 +1331,10 @@ class MyAgent:
 
     async def process(self, text, history, config, token):
         # Must yield AgentEvent items
+        # Must yield UsageEvent as penultimate event (optional but recommended)
         # Must yield HistoryUpdate as final event
         yield TextDelta("response text")
+        yield UsageEvent(usage=turn_usage)
         yield HistoryUpdate(history=[*history, user_msg, assistant_msg])
 
     async def reset(self): pass
@@ -1213,6 +1360,8 @@ class MyChannel(Channel):
             elif isinstance(event, InteractionRequest):
                 response = await self._prompt_user(event)
                 event.resolve(response)
+            elif isinstance(event, UsageEvent):
+                await self._display_usage(event.usage)
 
     async def send(self, text):
         await self._send_text(text)
@@ -1261,7 +1410,6 @@ class MyDelegationTool(Tool):
         session_id = await self._ctx.spawn(
             agent_type="ccagent",
             task="Implement feature X",
-            allowed_tools=["Bash", "Read", "Write"],
         )
         return ToolResult(output=f"Sub-agent launched: {session_id}")
 ```
@@ -1278,11 +1426,13 @@ Five tools provide the agent with sub-agent management capabilities. They are re
 
 | Tool | Name | Key Parameters | RuntimeContext Method |
 |------|------|---------------|----------------------|
-| `LaunchAgentTool` | `launch_agent` | type, task, allowed_tools, model | `ctx.spawn()` |
-| `ReplyAgentTool` | `reply_agent` | session_id, interaction_id, action, reason | `ctx.resolve()` |
+| `LaunchAgentTool` | `launch_agent` | type, task | `ctx.spawn()` |
+| `ReplyAgentTool` | `reply_agent` | session_id, interaction_id, action, reason, answers | `ctx.resolve()` |
 | `MessageAgentTool` | `message_agent` | session_id, text | `ctx.send()` |
 | `CheckAgentsTool` | `check_agents` | (none) | `ctx.list_agents()` |
 | `CancelAgentTool` | `cancel_agent` | session_id | `ctx.cancel()` |
+
+**Note:** `CheckAgentsTool` is defined in `session_tools.py` but is currently not registered in `create_registry()`. It exists as dead code — only 4 tools (`launch_agent`, `reply_agent`, `message_agent`, `cancel_agent`) are wired up.
 
 ### 14.2 Example Flow: Delegated Task
 
@@ -1292,31 +1442,27 @@ Five tools provide the agent with sub-agent management capabilities. They are re
 2. Agent calls launch_agent:
    {
      "type": "ccagent",
-     "task": "Refactor src/auth.py: extract middleware, update tests",
-     "allowed_tools": ["Bash", "Read", "Write", "Edit", "Glob", "Grep"]
+     "task": "Refactor src/auth.py: extract middleware, update tests"
    }
    → Returns session_id "20260316_120000_abc123"
 
-3. Agent calls check_agents:
-   → Returns:
-     Session: 20260316_120000_abc123
-     Status: running
-     Pending interactions: (none)
-
-4. Background CCAgent hits a tool not in allowed_tools (e.g., git push):
-   → Agent receives sub_agent_event notification in history
+3. Background CCAgent hits a tool that needs permission:
+   → Agent receives formatted notification text:
+     "[Sub-agent notification] session_id=20260316_120000_abc123
+      Permission required — interaction_id=interaction_456, tool=Bash
+      tool_input: {...}
+      Use reply_agent to allow/deny."
    → Agent calls reply_agent:
      {
        "session_id": "20260316_120000_abc123",
        "interaction_id": "interaction_456",
-       "action": "deny",
-       "reason": "Don't push yet — wait for review"
+       "action": "allow"
      }
 
-5. Background CCAgent completes:
-   → Agent receives completion notification with result text
+4. Background CCAgent completes a turn:
+   → Agent receives turn_complete notification with result text
 
-6. Agent reports to user: "Auth module refactored. Here's what changed..."
+5. Agent reports to user: "Auth module refactored. Here's what changed..."
 ```
 
 ### 14.3 Registry Wiring
@@ -1329,8 +1475,14 @@ def create_registry(config, memory=None, runtime_context=None):
     # ... auto-discover standard tools ...
 
     if runtime_context is not None:
-        for cls in (LaunchAgentTool, ReplyAgentTool, MessageAgentTool,
-                    CheckAgentsTool, CancelAgentTool):
+        from miniclaw.tools.session_tools import (
+            CancelAgentTool,
+            LaunchAgentTool,
+            MessageAgentTool,
+            ReplyAgentTool,
+        )
+        for cls in (LaunchAgentTool, ReplyAgentTool,
+                    MessageAgentTool, CancelAgentTool):
             tool = cls(runtime_context=runtime_context)
             registry.register(tool)
 
