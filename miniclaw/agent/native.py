@@ -12,7 +12,6 @@ from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancellationToken
 from miniclaw.log import truncate
-from miniclaw.memory.base import Memory
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
 from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
@@ -32,14 +31,12 @@ class NativeAgent:
         self,
         provider: Provider,
         tool_registry: ToolRegistry,
-        memory: Memory,
         system_prompt: str = "",
         default_model: str = "",
         temperature: float = 0.7,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
-        self._memory = memory
         self._system_prompt = system_prompt
         self._default_model = default_model
         self._temperature = temperature
@@ -79,13 +76,6 @@ class NativeAgent:
         tool_names = self._tools.list_names()
         if tool_names:
             system_parts.append(f"Available tools: {', '.join(tool_names)}")
-
-        # Add memory context
-        if config.memory_enabled:
-            context = await self._build_context(text)
-            if context:
-                system_parts.append(context)
-                logger.debug("[NATIVE] Memory context: %d chars", len(context))
 
         system_text = "\n\n".join(p for p in system_parts if p)
         if system_text:
@@ -264,19 +254,6 @@ class NativeAgent:
         return {}
 
     # --- Internal ---
-
-    async def _build_context(self, user_text: str) -> str:
-        """Build context from memory relevant to the user's message."""
-        try:
-            memories = await self._memory.recall(user_text, limit=3)
-            if memories:
-                lines = ["Relevant memories:"]
-                for m in memories:
-                    lines.append(f"- [{m['key']}]: {m['content']}")
-                return "\n".join(lines)
-        except Exception as e:
-            logger.debug("Memory recall failed: %s", e)
-        return ""
 
     async def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a single tool call."""

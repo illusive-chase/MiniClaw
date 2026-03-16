@@ -17,9 +17,6 @@ agent:
   max_tool_iterations: 50
   workspace_dir: ".workspace"
 
-memory:
-  path: "memory.json"
-
 logging:
   file_level: "debug"
   console_level: "info"

@@ -49,12 +49,11 @@ def discover_tools(tools_dir: Path) -> list[Tool]:
     return discovered
 
 
-def create_registry(config: dict, memory=None, runtime_context=None) -> ToolRegistry:
+def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
     """Create a tool registry with built-in tools and auto-discovered tools.
 
     Args:
         config: Application config dict.
-        memory: Optional Memory instance for memory-aware tools.
         runtime_context: Optional RuntimeContext for session management tools.
     """
     registry = ToolRegistry()
@@ -69,9 +68,7 @@ def create_registry(config: dict, memory=None, runtime_context=None) -> ToolRegi
         try:
             sig = inspect.signature(cls.__init__)
             params = list(sig.parameters.keys())
-            if "memory" in params and memory is not None:
-                tool = cls(memory=memory)
-            elif "workspace_dir" in params:
+            if "workspace_dir" in params:
                 tool = cls(workspace_dir=workspace_dir)
             else:
                 tool = cls()

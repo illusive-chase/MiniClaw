@@ -17,7 +17,6 @@ class AgentConfig:
     system_prompt: str = ""
     tools: list[str] | None = None  # allowed tool names (None = all)
     max_iterations: int = 30
-    memory_enabled: bool = True
     thinking: bool = False
     effort: str = "medium"  # "low" / "medium" / "high"
     temperature: float = 0.7

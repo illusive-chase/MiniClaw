@@ -57,17 +57,14 @@ def main() -> None:
     # NativeAgent factory (for sub-agents or other use)
     def build_native_agent(cfg, runtime_context=None):
         from miniclaw.agent.native import NativeAgent
-        from miniclaw.memory import create_memory
         from miniclaw.providers import create_provider
         from miniclaw.tools import create_registry
 
         provider = create_provider(config["provider"])
-        memory = create_memory(config.get("memory", {}), workspace_dir)
-        registry = create_registry(config, memory, runtime_context=runtime_context)
+        registry = create_registry(config, runtime_context=runtime_context)
         return NativeAgent(
             provider=provider,
             tool_registry=registry,
-            memory=memory,
             system_prompt=cfg.system_prompt or "",
             default_model=cfg.model or config["provider"].get("model", ""),
             temperature=cfg.temperature or 0.7,

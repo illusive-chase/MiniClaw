@@ -10,7 +10,6 @@ from miniclaw.agent.native import NativeAgent
 from miniclaw.config import load_config
 from miniclaw.listeners import create_listener
 from miniclaw.log import setup_console_logging, setup_file_logging
-from miniclaw.memory import create_memory
 from miniclaw.persistence import SessionManager
 from miniclaw.providers import create_provider
 from miniclaw.runtime import Runtime
@@ -38,7 +37,6 @@ def main() -> None:
     workspace_dir = agent_cfg.get("workspace_dir", ".workspace")
 
     provider = create_provider(config["provider"])
-    memory = create_memory(config.get("memory", {}), workspace_dir)
 
     # Build agent config
     agent_config = AgentConfig(
@@ -46,16 +44,14 @@ def main() -> None:
         system_prompt=agent_cfg.get("system_prompt", ""),
         max_iterations=agent_cfg.get("max_tool_iterations", 50),
         temperature=config["provider"].get("temperature", 0.7),
-        memory_enabled=True,
     )
 
     # Per-session factory: creates a fresh NativeAgent with RuntimeContext-aware registry
     def build_native_agent(cfg, runtime_context=None):
-        registry = create_registry(config, memory, runtime_context=runtime_context)
+        registry = create_registry(config, runtime_context=runtime_context)
         return NativeAgent(
             provider=provider,
             tool_registry=registry,
-            memory=memory,
             system_prompt=cfg.system_prompt or agent_config.system_prompt,
             default_model=cfg.model or agent_config.model,
             temperature=cfg.temperature or agent_config.temperature,
