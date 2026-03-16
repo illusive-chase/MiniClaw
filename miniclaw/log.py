@@ -1,5 +1,6 @@
 """Channel-agnostic logging setup (file + optional console)."""
 
+import copy
 import logging
 from datetime import date
 from pathlib import Path
@@ -9,6 +10,42 @@ from rich.logging import RichHandler
 
 # Silence noisy third-party loggers
 logging.getLogger("markdown_it").setLevel(logging.WARNING)
+
+
+class Truncatable:
+    """A string wrapper: ``str()`` returns the truncated form, ``.full`` keeps the original."""
+
+    __slots__ = ("full", "_short")
+
+    def __init__(self, value: str, max_len: int = 256) -> None:
+        self.full = value
+        if len(value) <= max_len:
+            self._short = value
+        else:
+            self._short = value[:max_len] + f"...({len(value)} total chars)"
+
+    def __str__(self) -> str:
+        return self._short
+
+    def __repr__(self) -> str:
+        return self._short
+
+
+class _FullContentFormatter(logging.Formatter):
+    """Formatter that resolves :class:`Truncatable` args to their full content."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        record = copy.copy(record)
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                a.full if isinstance(a, Truncatable) else a for a in record.args
+            )
+        elif isinstance(record.args, dict):
+            record.args = {
+                k: v.full if isinstance(v, Truncatable) else v
+                for k, v in record.args.items()
+            }
+        return super().format(record)
 
 
 def setup_file_logging(file_level: int, workspace_dir: str) -> logging.FileHandler:
@@ -23,7 +60,7 @@ def setup_file_logging(file_level: int, workspace_dir: str) -> logging.FileHandl
 
     file_handler = logging.FileHandler(log_path, encoding="utf-8")
     file_handler.setFormatter(
-        logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        _FullContentFormatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
     )
     file_handler.setLevel(file_level)
 
@@ -33,11 +70,9 @@ def setup_file_logging(file_level: int, workspace_dir: str) -> logging.FileHandl
     return file_handler
 
 
-def truncate(value: str, max_len: int = 4096) -> str:
-    """Truncate a string for safe logging, appending total length if clipped."""
-    if len(value) <= max_len:
-        return value
-    return value[:max_len] + f"...({len(value)} total chars)"
+def truncate(value: str, max_len: int = 256) -> "Truncatable":
+    """Wrap a string for logging: truncated on console, full in file logs."""
+    return Truncatable(value, max_len)
 
 
 def adjust_root_level() -> None:

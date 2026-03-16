@@ -8,7 +8,7 @@ import logging
 from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.native import NativeAgent
 from miniclaw.config import load_config
-from miniclaw.listeners.cli import CLIListener
+from miniclaw.listeners import create_listener
 from miniclaw.log import setup_console_logging, setup_file_logging
 from miniclaw.memory import create_memory
 from miniclaw.persistence import SessionManager
@@ -86,13 +86,9 @@ def main() -> None:
     runtime.register_agent("native", build_native_agent)
     runtime.register_agent("ccagent", build_ccagent)
 
-    # Add CLI listener
-    cli_listener = CLIListener(
-        agent_type="native",
-        agent_config=agent_config,
-        workspace_dir=workspace_dir,
-    )
-    runtime.add_listener(cli_listener)
+    # Add listener (CLI or Feishu, based on config)
+    listener = create_listener(config, agent_type="native", agent_config=agent_config, workspace_dir=workspace_dir)
+    runtime.add_listener(listener)
 
     # Run
     try:

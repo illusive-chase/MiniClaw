@@ -526,24 +526,48 @@ CLIChannel. Channel is an output-only endpoint (Principle #3).
 ### 6.3 FeishuChannel
 
 ```
-FeishuChannel(transport, chat_id)
-├── _transport: FeishuTransport (shared, handles API calls)
-├── _chat_id: str (specific chat/user)
+FeishuChannel(client, chat_id, reply_to=None)
+├── _client: lark_oapi.Client            # shared client (async API methods)
+├── _chat_id: str                        # target chat
+├── _reply_to: str | None                # message_id for thread replies
+├── _sent_message_id: str | None         # for progressive updates
 │
 ├── send_stream(stream):
-│   ├─ Collect text chunks into buffer
-│   ├─ For ActivityEvents: optionally update card with progress
-│   ├─ For InteractionRequests: send interactive card with buttons
-│   │   └─ Wait for callback from Feishu (button click)
-│   │   └─ event.resolve(response)
-│   └─ Send final message card via Feishu API
+│   ├─ Collect TextDelta chunks into buffer
+│   ├─ For InteractionRequests: auto-resolve (allow=True)
+│   │   (no interactive card UI — bot has no callback endpoint for buttons)
+│   ├─ For ActivityEvents: silently consumed
+│   ├─ For InterruptedEvent: append "[interrupted]"
+│   ├─ Debounced progressive update:
+│   │   ├─ First substantial text → send initial message, store _sent_message_id
+│   │   └─ Every ~3s of new text → patch message with accumulated text
+│   └─ Final: patch complete message (or send if none sent yet)
 │
 ├── send(text):
-│   └─ transport.send_text(chat_id, text)
+│   └─ _send_text(text)
 │
-└── replay(history):
-    └─ No-op or send summary card
+├── replay(history):
+│   └─ No-op (silent resume)
+│
+├── _send_text(text) → str | None:
+│   ├─ Uses async lark_oapi methods (areply, acreate)
+│   ├─ If _reply_to: ReplyMessageRequest → thread reply
+│   ├─ Else: CreateMessageRequest → new message to chat
+│   └─ Returns message_id on success for progressive updates
+│
+└── _patch_message(message_id, text):     # for progressive updates
+    └─ PatchMessageRequest via async apatch
 ```
+
+**Async API methods:** The `lark_oapi` client provides async variants of its
+REST methods — `message.areply()`, `message.acreate()`, `message.apatch()` —
+which use `Transport.aexecute()` internally. These are proper coroutines,
+eliminating the need for `run_in_executor`.
+
+**Progressive updates:** The stream consumer sends an initial message on first
+substantial text, then debounce-patches every ~3 seconds as new text arrives.
+The final patch ensures the complete text is displayed. For short responses,
+only one message is sent.
 
 ### 6.4 SubAgentDriver
 
@@ -664,27 +688,67 @@ CLIListener.run(runtime):
 
 Uses the input queue model with per-session background consumers.
 
+**Threading model:** The `lark_oapi.ws.Client.start()` method is blocking — it
+owns its own asyncio event loop internally (`loop.run_until_complete()`). It
+must run in a separate thread. Event callbacks (`handle_message`) execute inside
+the SDK's event loop on that thread. All interaction with our main asyncio loop
+(session creation, queue submission, task creation) must be marshaled via
+`main_loop.call_soon_threadsafe()`.
+
 ```
 FeishuListener.run(runtime):
 │
-├─ Setup lark_oapi WebSocket client
+├─ main_loop = asyncio.get_running_loop()   # capture BEFORE spawning thread
+├─ Setup lark_oapi REST client
 ├─ latest_channels: dict[str, FeishuChannel]  # per session
 ├─ consumer_tasks: dict[str, asyncio.Task]    # per session
+├─ _shutdown_event: asyncio.Event
 │
-├─ handle_message(event):
+├─ handle_message(ctx, event):               # ⚠ runs on SDK thread
+│   ├─ Parse text, sender_id, chat_id, message_id
+│   ├─ Strip @bot mentions from text (for group chats)
+│   ├─ Skip non-text and empty messages
+│   └─ main_loop.call_soon_threadsafe(       # marshal to main loop
+│           _dispatch, sender_id, chat_id, message_id, text
+│       )
+│
+├─ _dispatch(sender_id, chat_id, message_id, text):
+│   │  # Runs on main event loop — safe for asyncio operations
 │   ├─ session = runtime.get_or_create_session(sender_id, type, config)
-│   ├─ channel = FeishuChannel(client, chat_id, reply_to)
+│   ├─ channel = FeishuChannel(client, chat_id, reply_to=message_id)
 │   ├─ session.bind_primary(channel)
 │   ├─ latest_channels[session.id] = channel
 │   ├─ ensure_consumer(session, get_channel=lambda: latest_channels[sid])
 │   └─ session.submit(text, "user")
 │
-├─ _consume(session, get_channel):    # background task per session
+├─ Start WebSocket in daemon thread:
+│   ├─ ws_client = lark.ws.Client(app_id, app_secret, event_handler=handler)
+│   ├─ ws_thread = Thread(target=ws_client.start, daemon=True)
+│   ├─ ws_thread.start()
+│   └─ await _shutdown_event.wait()          # block until shutdown
+│
+├─ _consume(session, get_channel):           # background task per session
 │   └─ async for stream, source in session.run():
 │       └─ await get_channel().send_stream(stream)
 │
-└─ shutdown(): cancel all consumer tasks
+└─ shutdown():
+    ├─ _shutdown_event.set()                 # unblock run()
+    └─ cancel all consumer tasks
 ```
+
+**Why daemon thread instead of `run_in_executor`:** The SDK's `start()` blocks
+forever (internal `loop.run_until_complete(_select())` that sleeps infinitely).
+A daemon thread dies automatically with the process. Using `run_in_executor`
+would work but ties up a thread-pool slot indefinitely.
+
+**@mention stripping:** In group chats, Feishu delivers the bot-trigger text
+as `"@_user_1 <actual message>"`. The listener strips the mention prefix
+before submitting to the session.
+
+**Channel-per-message:** Each incoming message creates a fresh `FeishuChannel`
+with that message's `message_id` as `reply_to`, so the response is threaded
+to the correct message. The `latest_channels` dict ensures the consumer always
+uses the most recent channel for a given session.
 
 ---
 

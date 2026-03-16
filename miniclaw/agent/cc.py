@@ -251,7 +251,7 @@ class CCAgent:
                             logger.info(
                                 "[CC] ToolUseBlock: name=%s, id=%s, input=%s",
                                 block.name, block.id,
-                                truncate(str(block.input), 200),
+                                truncate(str(block.input)),
                             )
                             event = ActivityEvent(
                                 kind=ActivityKind.TOOL,
