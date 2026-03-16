@@ -98,3 +98,52 @@ Ensure `config.yaml` has a working provider (OpenAI or Anthropic).
 - Text appears word-by-word or chunk-by-chunk (not all at once)
 - The Rich Live panel re-renders progressively
 - Code blocks render with proper markdown formatting
+
+---
+
+## Test 7: AskUserQuestion — single question with option selection
+
+**What this tests**: NativeAgent yields an `InteractionRequest` when the LLM calls `AskUserQuestion`. The CLI channel renders options and the user's answer flows back as a tool result.
+
+**Steps**:
+1. Send: `I want to create a new file. Ask me what programming language I'd like to use.`
+2. The agent should invoke `AskUserQuestion` with language options
+3. A cyan "Agent Question" panel appears with numbered choices + "Other"
+4. Type a number (e.g., `1`) and press Enter
+
+**Expected Behavior**:
+- The CLI renders a panel titled "Agent Question" with the question and numbered options
+- After selecting an option, the agent continues and incorporates the choice into its response
+- No `ActivityEvent` (START/FINISH) is emitted for `AskUserQuestion` — only the interaction prompt
+- The prompt returns normally after the agent finishes
+
+---
+
+## Test 8: AskUserQuestion — "Other" free-text answer
+
+**Steps**:
+1. Send: `Help me pick a name for a variable. Ask me what the variable represents.`
+2. When the question panel appears, choose the "Other" option (the last number)
+3. Type a custom answer at the `Your answer:` prompt
+
+**Expected Behavior**:
+- The "Other" option is always listed as the last choice
+- After typing a custom answer, the agent receives it and uses it in its response
+- The custom text appears verbatim in the tool result sent back to the LLM
+
+---
+
+## Test 9: AskUserQuestion — agent continues tool loop after answer
+
+**What this tests**: After `AskUserQuestion` resolves, the tool loop continues normally (the agent can call more tools in subsequent iterations).
+
+**Steps**:
+1. Send: `Ask me which file I want to read, then read it for me.`
+2. Answer the question (e.g., pick or type `config.yaml`)
+3. Observe that the agent then invokes `file_read` (or similar) as a follow-up tool call
+
+**Expected Behavior**:
+- AskUserQuestion fires first (interaction panel appears)
+- After answering, the agent makes a second LLM call that includes a normal tool call
+- Activity footer shows the follow-up tool's START → FINISH cycle
+- Final response incorporates both the user's choice and the tool's output

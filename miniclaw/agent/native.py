@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -11,11 +12,63 @@ from uuid import uuid4
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.agent.config import AgentConfig
 from miniclaw.cancellation import CancellationToken
+from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
 from miniclaw.log import truncate
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
 from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
 from miniclaw.usage import UsageStats
+
+# Tool spec injected into the LLM so it can ask the user questions mid-turn.
+_ASK_USER_TOOL_SPEC = {
+    "type": "function",
+    "function": {
+        "name": "AskUserQuestion",
+        "description": (
+            "Ask the user a question with predefined options. Use this when you "
+            "need clarification, a decision between approaches, or user preferences "
+            "before proceeding."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "description": "Questions to ask the user (1-4 questions).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The question text.",
+                            },
+                            "options": {
+                                "type": "array",
+                                "description": "Available choices (2-4 options).",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {
+                                            "type": "string",
+                                            "description": "Short display text for the option.",
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Explanation of the option.",
+                                        },
+                                    },
+                                    "required": ["label", "description"],
+                                },
+                            },
+                        },
+                        "required": ["question", "options"],
+                    },
+                },
+            },
+            "required": ["questions"],
+        },
+    },
+}
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +143,13 @@ class NativeAgent:
         user_msg = ChatMessage(role="user", content=text)
         messages.append(user_msg)
 
-        # Tool specs
-        tool_specs = self._tools.all_specs()
+        # Tool specs (include built-in AskUserQuestion)
+        tool_specs = list(self._tools.all_specs() or [])
+        tool_specs.append(_ASK_USER_TOOL_SPEC)
         logger.debug(
             "[NATIVE] Tool specs: %d tools (%s)",
-            len(tool_specs) if tool_specs else 0,
-            ", ".join(t.get("function", {}).get("name", "") for t in tool_specs) if tool_specs else "none",
+            len(tool_specs),
+            ", ".join(t.get("function", {}).get("name", "") for t in tool_specs),
         )
 
         effective_model = config.model or self._default_model
@@ -184,6 +238,45 @@ class NativeAgent:
                 tc_event_id = tc.id or str(uuid4())
                 logger.info("Tool call: %s(%s)", tc.name, json.dumps(tc.arguments, ensure_ascii=False)[:200])
 
+                # --- AskUserQuestion: yield InteractionRequest, await response ---
+                if tc.name == "AskUserQuestion":
+                    loop = asyncio.get_running_loop()
+                    future: asyncio.Future[InteractionResponse] = loop.create_future()
+
+                    request = InteractionRequest(
+                        id=str(uuid4()),
+                        type=InteractionType.ASK_USER,
+                        tool_name="AskUserQuestion",
+                        tool_input=tc.arguments,
+                        _future=future,
+                    )
+                    yield request  # channel prompts user and calls resolve()
+
+                    ir_response: InteractionResponse = await future
+                    answers = (
+                        ir_response.updated_input.get("answers", {})
+                        if ir_response.updated_input
+                        else {}
+                    )
+                    result_text = json.dumps(
+                        {"answers": answers}, ensure_ascii=False,
+                    )
+                    logger.info(
+                        "[NATIVE] AskUserQuestion resolved: %s",
+                        truncate(result_text),
+                    )
+                    had_nontext = True
+
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            content=result_text,
+                            tool_call_id=tc.id,
+                        )
+                    )
+                    continue
+
+                # --- Normal tool execution ---
                 yield ActivityEvent(
                     kind=ActivityKind.TOOL,
                     status=ActivityStatus.START,
