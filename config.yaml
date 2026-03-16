@@ -28,3 +28,7 @@ remotes:
 logging:
   file_level: "debug"
   console_level: "info"
+
+plugctx:
+  auto_load:
+    - "general"
