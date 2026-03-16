@@ -111,8 +111,6 @@ class RuntimeContext:
             agent_type, remote, ws_url, self._parent.id, task,
         )
 
-        if not cwd:
-            cwd, _ = self._parent.effective_cwd()
         driver = RemoteSubAgentDriver(
             session_id=session_id,
             parent_session=self._parent,
