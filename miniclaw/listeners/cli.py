@@ -29,6 +29,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _print_session_exit(console: Console, session: Session | None) -> None:
+    """Print session ID (and name) so the user can /resume later."""
+    if session is None:
+        return
+    sid = session.id
+    name = session.metadata.name
+    label = f"{sid}  ({name})" if name else sid
+    console.print(f"[dim]Session saved: {label}[/dim]")
+
+
 class CLIListener(Listener):
     """Interactive REPL loop that drives a CLI session.
 
@@ -98,6 +108,7 @@ class CLIListener(Listener):
                         continue
 
                     if line.lower() in ("quit", "exit"):
+                        _print_session_exit(console, self._session)
                         console.print("[dim]Goodbye![/dim]")
                         break
 
@@ -114,6 +125,7 @@ class CLIListener(Listener):
                     await self._response_done.wait()
 
                 except (EOFError, KeyboardInterrupt):
+                    _print_session_exit(console, self._session)
                     console.print("\n[dim]Goodbye![/dim]")
                     break
         finally:
@@ -266,6 +278,7 @@ class CLIListener(Listener):
             console.print(f"[dim]Session renamed to: {args}[/dim]")
 
         elif cmd in ("quit", "exit", "q"):
+            _print_session_exit(console, self._session)
             console.print("[dim]Goodbye![/dim]")
             raise SystemExit(0)
 

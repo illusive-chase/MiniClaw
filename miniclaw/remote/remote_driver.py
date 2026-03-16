@@ -16,15 +16,18 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 
 from miniclaw.channels.base import Channel
-from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
+from miniclaw.interactions import (
+    InteractionRequest,
+    InteractionResponse,
+    InteractionType,
+)
 from miniclaw.remote.protocol import (
-    deserialize_event,
     serialize_cancel,
     serialize_interaction_response,
     serialize_send_message,
     serialize_spawn,
 )
-from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta, UsageEvent
+from miniclaw.types import AgentEvent
 
 if TYPE_CHECKING:
     from miniclaw.session import Session

@@ -12,10 +12,13 @@ from __future__ import annotations
 from typing import Any
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
-from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
+from miniclaw.interactions import (
+    InteractionRequest,
+    InteractionResponse,
+    InteractionType,
+)
 from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta, UsageEvent
 from miniclaw.usage import UsageStats
-
 
 # ---------------------------------------------------------------------------
 # Server -> Client: serialize AgentEvent for the wire

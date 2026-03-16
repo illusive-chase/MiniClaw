@@ -19,7 +19,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aiohttp import web, WSMsgType
+from aiohttp import WSMsgType, web
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.channels.base import Channel

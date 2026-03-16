@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from typing import Any
-
-from miniclaw.config import load_config
-from miniclaw.log import setup_console_logging, setup_file_logging
 
 
 def serve_main(
