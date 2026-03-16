@@ -44,6 +44,13 @@ class Runtime:
         self._plugctx_config = plugctx_config or {}
         self._remotes_config = remotes_config or {}
 
+        from miniclaw.remote.tunnel import TunnelManager
+        self._tunnel_manager = TunnelManager()
+
+    @property
+    def tunnel_manager(self) -> Any:
+        return self._tunnel_manager
+
     # --- Agent registry ---
 
     def register_agent(
@@ -373,5 +380,8 @@ class Runtime:
                     await session.agent.shutdown()
                 except Exception as e:
                     logger.error("Error shutting down agent: %s", e)
+
+        # Close all SSH tunnels
+        await self._tunnel_manager.close_all()
 
         logger.info("Runtime shutdown complete")

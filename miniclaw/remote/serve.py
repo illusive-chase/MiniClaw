@@ -12,7 +12,7 @@ from miniclaw.log import setup_console_logging, setup_file_logging
 
 def serve_main(
     config: dict[str, Any],
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 9100,
 ) -> None:
     """Start the RemoteDaemon, blocking until Ctrl-C."""

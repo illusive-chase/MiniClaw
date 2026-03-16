@@ -171,14 +171,14 @@ class RemoteDaemon:
 
     Usage::
 
-        daemon = RemoteDaemon(config, host="0.0.0.0", port=9100)
+        daemon = RemoteDaemon(config, host="127.0.0.1", port=9100)
         await daemon.run()
     """
 
     def __init__(
         self,
         config: dict[str, Any],
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 9100,
         grace_period: int = DEFAULT_GRACE_PERIOD,
         max_sessions: int = DEFAULT_MAX_SESSIONS,

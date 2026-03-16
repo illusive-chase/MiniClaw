@@ -4,29 +4,33 @@ This guide walks through setting up a local NativeAgent that can spawn remote CC
 
 ## Architecture Overview
 
+The daemon binds to `127.0.0.1` (localhost only) by default. Remote access is secured via SSH tunnels — the local machine opens an SSH connection and forwards a local port through it to the daemon.
+
 ```
 ┌─ Local Machine ──────────────────────┐     ┌─ Remote Server ──────────────────┐
 │                                      │     │                                  │
-│  CLIListener                         │     │  RemoteDaemon (ws://host:9100)   │
+│  CLIListener                         │     │  RemoteDaemon (127.0.0.1:9100)  │
 │    ↓                                 │     │    ↓                             │
-│  Session (NativeAgent)               │ WS  │  Session (CCAgent)               │
+│  Session (NativeAgent)               │ SSH │  Session (CCAgent)               │
 │    ↓                                 │◄───►│    ↓                             │
 │  launch_agent(remote="server1")      │     │  Claude Agent SDK subprocess     │
-│    → RemoteSubAgentDriver ──────────►│     │    → DaemonSessionHandler        │
-│                                      │     │                                  │
-│  reply_agent / cancel_agent          │     │  InteractionRequest bridging     │
-│    ← interaction forwarding ◄────────│     │    ← permission_required         │
+│    → TunnelManager (SSH tunnel)      │     │    → DaemonSessionHandler        │
+│    → RemoteSubAgentDriver ──────────►│     │                                  │
+│      ws://127.0.0.1:<local>/ws       │     │  InteractionRequest bridging     │
+│                                      │     │    ← permission_required         │
+│  reply_agent / cancel_agent          │     │                                  │
+│    ← interaction forwarding ◄────────│     │                                  │
 └──────────────────────────────────────┘     └──────────────────────────────────┘
 ```
 
-**Key point**: The NativeAgent decides *when* and *what* to delegate. The remote CCAgent executes autonomously, forwarding permission requests back to the local agent for approval.
+**Key point**: The NativeAgent decides *when* and *what* to delegate. The remote CCAgent executes autonomously, forwarding permission requests back to the local agent for approval. All traffic is encrypted and authenticated via SSH.
 
 ## Prerequisites
 
 - Python 3.12+
 - An Anthropic API key
 - Claude Code CLI installed on the **remote** server (CCAgent wraps `claude-agent-sdk` which requires the CLI)
-- Network connectivity between local and remote machines on the chosen port (default 9100)
+- SSH access to the remote server (key-based auth recommended; `ssh-agent` supported)
 
 ## Step 1: Install MiniClaw on Both Machines
 
@@ -79,20 +83,22 @@ export MINICLAW_ANTHROPIC_API_KEY="sk-ant-..."
 ## Step 3: Start the Remote Daemon
 
 ```bash
-minicode --serve --host 0.0.0.0 --port 9100
+minicode --serve
 ```
 
 Or equivalently:
 
 ```bash
-python miniclaw/cc_main.py --serve --host 0.0.0.0 --port 9100
+python miniclaw/cc_main.py --serve
 ```
 
 You should see:
 
 ```
-RemoteDaemon listening on ws://0.0.0.0:9100/ws
+RemoteDaemon listening on ws://127.0.0.1:9100/ws
 ```
+
+The daemon binds to `127.0.0.1` by default — it is **not** exposed to the network. Remote clients connect through SSH tunnels (configured in Step 4). If you need to override the bind address (e.g. for testing on a private network), pass `--host 0.0.0.0`.
 
 The daemon:
 - Accepts WebSocket connections at `/ws`
@@ -124,21 +130,42 @@ agent:
   max_tool_iterations: 50
   workspace_dir: ".workspace"
 
-# Map friendly names to remote daemon WebSocket URLs
+# Map friendly names to remote daemons.
+# SSH tunnel config (recommended) — encrypted, authenticated:
 remotes:
-  server1: "ws://YOUR_REMOTE_IP:9100/ws"
+  server1:
+    ssh_host: "remote-host"       # hostname or IP
+    ssh_user: "deploy"            # optional, defaults to current user / ssh config
+    ssh_port: 22                  # optional, default 22
+    ssh_key: "~/.ssh/id_rsa"     # optional, uses ssh-agent if omitted
+    daemon_port: 9100             # optional, default 9100
+    local_port: 0                 # optional, 0 = auto-assign free port
 
 logging:
   file_level: "debug"
   console_level: "info"
 ```
 
-Replace `YOUR_REMOTE_IP` with the remote server's IP or hostname. You can define multiple remotes:
+The `TunnelManager` automatically creates an SSH tunnel (`ssh -N -L`) when the remote is first used. Multiple sessions to the same remote share a single SSH connection. Tunnels are cleaned up on shutdown.
+
+You can define multiple remotes:
 
 ```yaml
 remotes:
-  server1: "ws://192.168.1.100:9100/ws"
-  server2: "ws://10.0.0.50:9100/ws"
+  server1:
+    ssh_host: "192.168.1.100"
+    ssh_user: "deploy"
+  server2:
+    ssh_host: "10.0.0.50"
+    ssh_key: "~/.ssh/id_ed25519"
+    daemon_port: 9200
+```
+
+**Direct URL mode (backward compatible, no tunnel)** — for testing or private networks:
+
+```yaml
+remotes:
+  local_test: "ws://localhost:9100/ws"
   staging: "wss://staging.example.com:9100/ws"   # TLS
 ```
 
@@ -193,13 +220,16 @@ You can also use a raw WebSocket URL instead of a config alias:
 
 ### What Happens Under the Hood
 
-1. `RuntimeContext.spawn()` detects `remote="server1"`, resolves it to `ws://...` via `config.remotes`
-2. Creates a `RemoteSubAgentDriver` that connects to the daemon over WebSocket
-3. Sends a `spawn` message; daemon creates a CCAgent session and starts processing
-4. Events stream back over WebSocket (`text_delta`, `activity`, `turn_complete`)
-5. When the remote CCAgent needs permission (e.g., to write a file), an `interaction_request` is forwarded to the local NativeAgent
-6. The NativeAgent resolves it via `reply_agent`, and the response is sent back over WebSocket
-7. On completion, a `turn_complete` notification is injected into the parent session
+1. `RuntimeContext.spawn()` detects `remote="server1"`, calls `_resolve_remote_url()`
+2. `_resolve_remote_url()` finds the dict config, calls `TunnelManager.get_or_create()`
+3. `TunnelManager` launches `ssh -N -L <local>:127.0.0.1:9100 deploy@remote-host`
+4. Returns `ws://127.0.0.1:<local_port>/ws` — a local endpoint for the tunnel
+5. Creates a `RemoteSubAgentDriver` that connects to this local endpoint
+6. Traffic flows through the SSH tunnel to the remote daemon on `127.0.0.1:9100`
+7. Events stream back over WebSocket (`text_delta`, `activity`, `turn_complete`)
+8. When the remote CCAgent needs permission (e.g., to write a file), an `interaction_request` is forwarded to the local NativeAgent
+9. The NativeAgent resolves it via `reply_agent`, and the response is sent back over WebSocket
+10. On completion, a `turn_complete` notification is injected into the parent session
 
 ## Managing Remote Sub-Agents
 
@@ -241,9 +271,17 @@ The NativeAgent can then call:
 
 ### Connection refused
 
-- Verify the daemon is running: you should see `RemoteDaemon listening on ws://...`
-- Check firewall rules — port 9100 must be open
-- Verify the URL in `config.yaml` matches the daemon's bind address
+- Verify the daemon is running: you should see `RemoteDaemon listening on ws://127.0.0.1:9100/ws`
+- If using SSH tunnels, check that SSH key auth works: `ssh deploy@remote-host echo ok`
+- If using direct URLs, verify the daemon was started with `--host 0.0.0.0` and the firewall allows port 9100
+- Verify the remote config in `config.yaml` matches the daemon's bind address and port
+
+### SSH tunnel fails to start
+
+- Check that `ssh` is available on PATH
+- Verify key-based auth works without password prompts (tunnels use `BatchMode=yes`)
+- Check `~/.ssh/config` for conflicting settings
+- Look for the SSH error message in the exception: `TunnelError: SSH tunnel exited immediately (rc=...): <stderr>`
 
 ### Spawn rejected: Max sessions reached
 

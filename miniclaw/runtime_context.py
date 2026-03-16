@@ -95,7 +95,7 @@ class RuntimeContext:
         from miniclaw.remote.remote_driver import RemoteSubAgentDriver
         from miniclaw.session import generate_session_id
 
-        ws_url = self._resolve_remote_url(remote)
+        ws_url = await self._resolve_remote_url(remote)
         session_id = generate_session_id()
 
         logger.debug(
@@ -120,23 +120,45 @@ class RuntimeContext:
         )
         return session_id
 
-    def _resolve_remote_url(self, remote: str) -> str:
+    async def _resolve_remote_url(self, remote: str) -> str:
         """Resolve a remote target to a WebSocket URL.
 
         If ``remote`` starts with ``ws://`` or ``wss://``, use it directly.
-        Otherwise, look it up in ``runtime._remotes_config``.
+        Otherwise, look it up in ``runtime._remotes_config``.  If the config
+        entry is a dict with ``ssh_host``, an SSH tunnel is created via
+        the runtime's TunnelManager.
         """
         if remote.startswith("ws://") or remote.startswith("wss://"):
             return remote
 
         remotes = getattr(self._runtime, "_remotes_config", None) or {}
-        url = remotes.get(remote)
-        if not url:
+        entry = remotes.get(remote)
+        if not entry:
             raise ValueError(
                 f"Unknown remote '{remote}'. Configure it under "
                 f"'remotes' in config.yaml or pass a ws:// URL directly."
             )
-        return url
+
+        # Dict config → SSH tunnel
+        if isinstance(entry, dict):
+            from miniclaw.remote.tunnel import TunnelError
+
+            ssh_host = entry.get("ssh_host")
+            if not ssh_host:
+                raise ValueError(
+                    f"Remote '{remote}' dict config missing 'ssh_host'."
+                )
+            tunnel_mgr = self._runtime.tunnel_manager
+            try:
+                tunnel = await tunnel_mgr.get_or_create(remote, entry)
+            except TunnelError as exc:
+                raise ValueError(
+                    f"Failed to establish SSH tunnel for remote '{remote}': {exc}"
+                ) from exc
+            return tunnel.ws_url
+
+        # String config → direct URL (backward compat)
+        return entry
 
     def resolve(
         self,

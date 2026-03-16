@@ -76,8 +76,13 @@ def main() -> None:
         )
 
     # Build runtime
+    remotes_config = config.get("remotes", {})
     session_manager = SessionManager(workspace_dir)
-    runtime = Runtime(session_manager, plugctx_config=config.get("plugctx"))
+    runtime = Runtime(
+        session_manager,
+        plugctx_config=config.get("plugctx"),
+        remotes_config=remotes_config or None,
+    )
 
     # Register agent factories
     runtime.register_agent("native", build_native_agent)

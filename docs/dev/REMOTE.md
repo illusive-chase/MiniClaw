@@ -1,4 +1,4 @@
-# Plan: Remote CCAgent Execution via WebSocket
+# Remote CCAgent Execution via WebSocket
 
 ## Context
 
@@ -45,7 +45,7 @@ JSON messages over WebSocket, multiplexed by `session_id`.
 ## New Files
 
 ### 1. `miniclaw/remote/__init__.py`
-Exports: `RemoteSubAgentDriver`, `RemoteDaemon`, `serve_main`.
+Exports: `RemoteSubAgentDriver`, `RemoteDaemon`, `serve_main`, `SSHTunnel`, `TunnelManager`, `TunnelError`.
 
 ### 2. `miniclaw/remote/protocol.py` — Wire protocol serialization
 - `serialize_event(session_id, event: AgentEvent) -> dict` — Converts TextDelta/ActivityEvent/InteractionRequest/InterruptedEvent/UsageEvent to JSON-serializable dict.
@@ -83,7 +83,7 @@ When `resolve_interaction()` is called (by `RuntimeContext.resolve()`), it sets 
 
 ```
 class RemoteDaemon:
-    __init__(config, host="0.0.0.0", port=9100)
+    __init__(config, host="127.0.0.1", port=9100)
     run()                    → starts aiohttp web app, serves WS at /ws
     _handle_connection(req)  → per-connection WS handler
 
@@ -107,31 +107,84 @@ def serve_main(config, host, port):
 
 Reuses `load_config()`, `setup_file_logging()`, same agent factory registration as `cc_main.py`.
 
+### 6. `miniclaw/remote/tunnel.py` — SSH tunnel manager
+
+```
+class TunnelError(Exception):
+    Raised when an SSH tunnel cannot be established.
+
+class SSHTunnel:
+    __init__(ssh_host, remote_port=9100, local_port=0, ssh_user=None, ssh_port=22, ssh_key=None)
+    start() -> int         → launch SSH subprocess, return actual local port
+    close()                → terminate SSH process
+    is_alive -> bool       → property: process still running
+    local_port -> int      → property
+    ws_url -> str          → property: "ws://127.0.0.1:<port>/ws"
+    _find_free_port()      → static: socket.bind(('127.0.0.1', 0))
+
+class TunnelManager:
+    get_or_create(key, config) -> SSHTunnel   → reuses alive tunnels, replaces dead ones
+    close(key)                                → close and remove one tunnel
+    close_all()                               → close all managed tunnels
+```
+
+**SSH command**: `ssh -N -L <local>:127.0.0.1:<remote> [user@]host` with options `BatchMode=yes`, `StrictHostKeyChecking=accept-new`, `ExitOnForwardFailure=yes`, `ServerAliveInterval=30`, `ServerAliveCountMax=3`.
+
+**Port auto-assignment**: When `local_port=0`, finds a free port via `socket.bind(('127.0.0.1', 0))`.
+
+**Startup check**: Waits 5s for the process; if it exits within that window, reads stderr and raises `TunnelError`.
+
+**Tunnel sharing**: `TunnelManager` keys tunnels by remote config name. Multiple sessions to the same remote share one SSH connection.
+
+**Config format** (under `remotes` in config.yaml):
+```yaml
+remotes:
+  server1:
+    ssh_host: "remote-host"       # required
+    ssh_user: "deploy"            # optional
+    ssh_port: 22                  # optional, default 22
+    ssh_key: "~/.ssh/id_rsa"     # optional
+    daemon_port: 9100             # optional, default 9100
+    local_port: 0                 # optional, 0 = auto-assign
+  # Backward compatible: string values still work (direct URL, no tunnel)
+  local_test: "ws://localhost:9100/ws"
+```
+
 ---
 
 ## Modifications to Existing Files
 
-### 6. `miniclaw/cc_main.py`
-- Add `argparse`: `--serve`, `--host` (default `0.0.0.0`), `--port` (default `9100`).
+### 7. `miniclaw/cc_main.py`
+- Add `argparse`: `--serve`, `--host` (default `127.0.0.1`), `--port` (default `9100`).
 - If `--serve`: call `serve_main()` and return early.
 - Pass `remotes_config` to Runtime.
 
-### 7. `miniclaw/runtime_context.py`
+### 8. `miniclaw/runtime_context.py`
 - Add `remote: str | None = None` parameter to `spawn()`.
 - Add `_spawn_remote()` method: creates `RemoteSubAgentDriver` instead of `SubAgentDriver`.
-- Add `_resolve_remote_url(remote)`: resolves config key or passthrough `ws://` URL.
+- `_resolve_remote_url(remote)` is **async**: resolves config key or passthrough `ws://` URL. If the config entry is a dict with `ssh_host`, calls `TunnelManager.get_or_create()` to establish an SSH tunnel and returns the tunnel's local `ws_url`.
+- String config entries are returned directly (backward compatible).
 
-### 8. `miniclaw/runtime.py`
+### 9. `miniclaw/runtime.py`
 - Add `remotes_config: dict[str, str] | None = None` to `Runtime.__init__()`, store as `self._remotes_config`.
+- Add `self._tunnel_manager = TunnelManager()` in `__init__`.
+- Add `tunnel_manager` property accessor.
+- Add `await self._tunnel_manager.close_all()` in `_shutdown()`.
 
-### 9. `miniclaw/config.py`
+### 10. `miniclaw/remote/daemon.py`
+- Default `host` changed from `"0.0.0.0"` to `"127.0.0.1"` (constructor + docstring).
+
+### 11. `miniclaw/remote/serve.py`
+- Default `host` changed from `"0.0.0.0"` to `"127.0.0.1"`.
+
+### 12. `miniclaw/config.py`
 - Add `"remotes": {}` to `DEFAULT_CONFIG`.
 
-### 10. `miniclaw/tools/session_tools.py`
+### 13. `miniclaw/tools/session_tools.py`
 - Add `"remote"` parameter to `LaunchAgentTool.parameters_schema()`.
 - Pass `remote=args.get("remote")` to `self._ctx.spawn()`.
 
-### 11. `pyproject.toml`
+### 14. `pyproject.toml`
 - Add `"aiohttp>=3.9"` to dependencies.
 
 ---
@@ -142,19 +195,24 @@ Reuses `load_config()`, `setup_file_logging()`, same agent factory registration 
 2. `miniclaw/remote/daemon.py` + `miniclaw/remote/serve.py` — server side
 3. `miniclaw/cc_main.py` — add `--serve` flag
 4. `miniclaw/remote/remote_driver.py` — local-side client (most complex: interaction bridging + reconnection)
-5. `miniclaw/runtime_context.py` — add `remote` param to `spawn()`
-6. `miniclaw/config.py`, `miniclaw/runtime.py` — config plumbing
-7. `miniclaw/tools/session_tools.py` — expose `remote` param in tool schema
-8. `pyproject.toml` — add aiohttp dep
-9. `miniclaw/remote/__init__.py` — package exports
+5. `miniclaw/remote/tunnel.py` — SSH tunnel manager (SSHTunnel, TunnelManager, TunnelError)
+6. `miniclaw/runtime_context.py` — add `remote` param to `spawn()`, async `_resolve_remote_url()` with tunnel support
+7. `miniclaw/config.py`, `miniclaw/runtime.py` — config plumbing + TunnelManager lifecycle
+8. `miniclaw/tools/session_tools.py` — expose `remote` param in tool schema
+9. `pyproject.toml` — add aiohttp dep
+10. `miniclaw/remote/__init__.py` — package exports
 
 ---
 
 ## Verification
 
-1. **Daemon startup**: `minicode --serve --port 9100` → logs "listening on ws://0.0.0.0:9100/ws", stays alive, Ctrl+C shuts down cleanly.
+1. **Daemon startup**: `minicode --serve` → logs "listening on ws://127.0.0.1:9100/ws", stays alive, Ctrl+C shuts down cleanly. Verify external connections refused (bound to localhost only).
 2. **Basic remote spawn**: Configure `remotes: {local_test: "ws://localhost:9100/ws"}`. From local minicode, ask agent to `launch_agent(type="ccagent", task="read config.yaml", remote="local_test")`. Verify daemon creates session, streams result back, parent gets turn_complete notification.
-3. **InteractionRequest round-trip**: Remote ccagent triggers a permission request (e.g., Write tool). Verify it's serialized → sent to local → parent notified → parent resolves via `reply_agent` → response sent to remote → CCAgent unblocks.
-4. **Cancel**: Launch remote task, cancel via `cancel_agent`. Verify remote session interrupted.
-5. **Follow-up message**: `message_agent(session_id, "also check X")`. Verify remote session processes it.
-6. **Disconnect/reconnect**: Kill daemon during task, restart, verify local driver reconnects (or fails gracefully).
+3. **SSH tunnel spawn**: Configure dict-style remote with `ssh_host`. Verify SSH tunnel process started, local port assigned, `RemoteSubAgentDriver` connects via `ws://127.0.0.1:<port>/ws`.
+4. **Tunnel reuse**: Two remote spawns to same server → verify single SSH tunnel process, both sessions work.
+5. **InteractionRequest round-trip**: Remote ccagent triggers a permission request (e.g., Write tool). Verify it's serialized → sent to local → parent notified → parent resolves via `reply_agent` → response sent to remote → CCAgent unblocks.
+6. **Cancel**: Launch remote task, cancel via `cancel_agent`. Verify remote session interrupted.
+7. **Follow-up message**: `message_agent(session_id, "also check X")`. Verify remote session processes it.
+8. **Cleanup**: Ctrl+C runtime → verify SSH tunnel processes terminated.
+9. **Disconnect/reconnect**: Kill daemon during task, restart, verify local driver reconnects (or fails gracefully).
+10. **Backward compat**: Use old `ws://` URL string style → verify still works without tunnel.
