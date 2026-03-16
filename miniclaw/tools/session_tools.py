@@ -46,6 +46,14 @@ class LaunchAgentTool(Tool):
                     "type": "string",
                     "description": "The task instruction for the sub-agent.",
                 },
+                "remote": {
+                    "type": "string",
+                    "description": (
+                        "Optional remote target. A config key from 'remotes' "
+                        "(e.g. 'server1') or a raw ws:// URL. If provided, the "
+                        "sub-agent runs on a remote daemon."
+                    ),
+                },
             },
             "required": ["type", "task"],
         }
@@ -53,6 +61,7 @@ class LaunchAgentTool(Tool):
     async def execute(self, args: dict) -> ToolResult:
         agent_type = args.get("type", "ccagent")
         task = args.get("task", "")
+        remote = args.get("remote")
 
         if not task:
             return ToolResult(output="Error: 'task' is required.", success=False)
@@ -61,10 +70,12 @@ class LaunchAgentTool(Tool):
             session_id = await self._ctx.spawn(
                 agent_type=agent_type,
                 task=task,
+                remote=remote,
             )
+            location = f" (remote: {remote})" if remote else ""
             return ToolResult(
                 output=(
-                    f"Sub-agent launched successfully.\n"
+                    f"Sub-agent launched successfully{location}.\n"
                     f"Session ID: {session_id}\n"
                     f"Type: {agent_type}\n"
                     f"Task: {task[:200]}\n"

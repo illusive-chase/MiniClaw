@@ -15,6 +15,7 @@ dependencies = [
     "rich>=13.0",
     "prompt_toolkit>=3.0",
     "claude-agent-sdk>=0.1.40",
+    "aiohttp>=3.9",
 ]
 
 [project.scripts]
@@ -29,5 +30,6 @@ packages = [
     "miniclaw.listeners",
     "miniclaw.memory",
     "miniclaw.providers",
+    "miniclaw.remote",
     "miniclaw.tools",
 ]

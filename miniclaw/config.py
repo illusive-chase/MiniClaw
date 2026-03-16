@@ -82,6 +82,7 @@ DEFAULT_CONFIG = {
         "ctx_root": ".workspace/contexts",
         "auto_load": [],
     },
+    "remotes": {},
 }
 
 

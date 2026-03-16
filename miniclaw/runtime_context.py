@@ -32,11 +32,22 @@ class RuntimeContext:
         self,
         agent_type: str,
         task: str,
+        remote: str | None = None,
     ) -> str:
         """Spawn a background sub-agent session.
 
+        Args:
+            agent_type: Agent type to spawn (e.g. "ccagent", "native").
+            task: Task instruction for the sub-agent.
+            remote: Optional remote target — either a config key from
+                ``config.remotes`` (e.g. "server1") or a raw ``ws://`` URL.
+                If provided, spawns on a RemoteDaemon via WebSocket.
+
         Returns the new session's ID.
         """
+        if remote:
+            return await self._spawn_remote(agent_type, task, remote)
+
         from miniclaw.agent.config import AgentConfig
         from miniclaw.subagent_driver import SubAgentDriver
 
@@ -74,6 +85,59 @@ class RuntimeContext:
         )
         return child_session.id
 
+    async def _spawn_remote(
+        self,
+        agent_type: str,
+        task: str,
+        remote: str,
+    ) -> str:
+        """Spawn a sub-agent on a remote daemon via WebSocket."""
+        from miniclaw.remote.remote_driver import RemoteSubAgentDriver
+        from miniclaw.session import generate_session_id
+
+        ws_url = self._resolve_remote_url(remote)
+        session_id = generate_session_id()
+
+        logger.debug(
+            "[RUNTIME] _spawn_remote: agent_type=%s, remote=%s, ws_url=%s, "
+            "parent_id=%s, task_preview=%.100s",
+            agent_type, remote, ws_url, self._parent.id, task,
+        )
+
+        driver = RemoteSubAgentDriver(
+            session_id=session_id,
+            parent_session=self._parent,
+            ws_url=ws_url,
+            agent_type=agent_type,
+            task=task,
+        )
+        self._drivers[session_id] = driver
+        driver.start()
+
+        logger.info(
+            "Spawned remote sub-agent %s (type=%s, remote=%s) from parent %s",
+            session_id, agent_type, remote, self._parent.id,
+        )
+        return session_id
+
+    def _resolve_remote_url(self, remote: str) -> str:
+        """Resolve a remote target to a WebSocket URL.
+
+        If ``remote`` starts with ``ws://`` or ``wss://``, use it directly.
+        Otherwise, look it up in ``runtime._remotes_config``.
+        """
+        if remote.startswith("ws://") or remote.startswith("wss://"):
+            return remote
+
+        remotes = getattr(self._runtime, "_remotes_config", None) or {}
+        url = remotes.get(remote)
+        if not url:
+            raise ValueError(
+                f"Unknown remote '{remote}'. Configure it under "
+                f"'remotes' in config.yaml or pass a ws:// URL directly."
+            )
+        return url
+
     def resolve(
         self,
         session_id: str,
@@ -107,6 +171,8 @@ class RuntimeContext:
 
         Returns a status message.
         """
+        from miniclaw.remote.remote_driver import RemoteSubAgentDriver
+
         driver = self._drivers.get(session_id)
         if driver is None:
             logger.warning(
@@ -119,8 +185,12 @@ class RuntimeContext:
             "[RUNTIME] send: session_id=%s, text_len=%d",
             session_id, len(text),
         )
-        child = driver._child_session
-        child.submit(text, "user")
+
+        if isinstance(driver, RemoteSubAgentDriver):
+            await driver.send(text)
+        else:
+            child = driver._child_session
+            child.submit(text, "user")
         return f"Message sent to sub-agent {session_id}"
 
     def list_agents(self) -> list[dict]:
@@ -144,6 +214,8 @@ class RuntimeContext:
 
         Returns a status message.
         """
+        from miniclaw.remote.remote_driver import RemoteSubAgentDriver
+
         driver = self._drivers.get(session_id)
         if driver is None:
             logger.warning(
@@ -153,5 +225,8 @@ class RuntimeContext:
             return f"No sub-agent session found: {session_id}"
 
         logger.info("[RUNTIME] cancel: session_id=%s", session_id)
-        driver._child_session.interrupt()
+        if isinstance(driver, RemoteSubAgentDriver):
+            driver.cancel()
+        else:
+            driver._child_session.interrupt()
         return f"Sub-agent {session_id} interrupted"

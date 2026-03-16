@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import logging
 
@@ -15,6 +16,12 @@ from miniclaw.runtime import Runtime
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="MiniClaw — CCAgent")
+    parser.add_argument("--serve", action="store_true", help="Run as remote daemon")
+    parser.add_argument("--host", default="0.0.0.0", help="Daemon bind host (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=9100, help="Daemon bind port (default: 9100)")
+    args = parser.parse_args()
+
     config = load_config()
     log_cfg = config.get("logging", {})
     file_level = getattr(logging, log_cfg.get("file_level", "warning").upper(), logging.WARNING)
@@ -28,6 +35,14 @@ def main() -> None:
             setup_console_logging(console_level)
 
     logger = logging.getLogger(__name__)
+
+    # --serve mode: start RemoteDaemon and return
+    if args.serve:
+        logger.info("Starting MiniClaw RemoteDaemon on %s:%d", args.host, args.port)
+        from miniclaw.remote.serve import serve_main
+        serve_main(config, host=args.host, port=args.port)
+        return
+
     logger.info("Starting MiniClaw (CCAgent)")
 
     cc_cfg = config.get("ccagent", {})
@@ -71,8 +86,13 @@ def main() -> None:
         )
 
     # Build runtime
+    remotes_config = config.get("remotes", {})
     session_manager = SessionManager(workspace_dir)
-    runtime = Runtime(session_manager, plugctx_config=config.get("plugctx"))
+    runtime = Runtime(
+        session_manager,
+        plugctx_config=config.get("plugctx"),
+        remotes_config=remotes_config or None,
+    )
 
     # Register agent factories
     runtime.register_agent("ccagent", build_ccagent)

@@ -33,7 +33,7 @@ class Runtime:
       - Graceful shutdown (drain + persist)
     """
 
-    def __init__(self, session_manager: SessionManager, plugctx_config: dict | None = None) -> None:
+    def __init__(self, session_manager: SessionManager, plugctx_config: dict | None = None, remotes_config: dict[str, str] | None = None) -> None:
         self.sessions: dict[str, Session] = {}
         self._session_manager = session_manager
         self._agent_registry: dict[str, Callable[..., AgentProtocol]] = {}
@@ -41,6 +41,7 @@ class Runtime:
         self._listener_tasks: list[asyncio.Task] = []
         self._shutting_down = False
         self._plugctx_config = plugctx_config or {}
+        self._remotes_config = remotes_config or {}
 
     # --- Agent registry ---
 
