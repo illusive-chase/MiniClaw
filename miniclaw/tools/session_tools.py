@@ -28,7 +28,8 @@ class LaunchAgentTool(Tool):
         return (
             "Launch a background sub-agent session. The sub-agent runs autonomously "
             "and you will be notified automatically when it completes a turn or needs "
-            "permission for a tool. Before receiving requests, you can continue to chat with users."
+            "permission for a tool. Before receiving requests, you can continue to chat "
+            "with users or just close this turn."
         )
 
     def parameters_schema(self) -> dict:
@@ -163,7 +164,7 @@ class ReplyAgentTool(Tool):
 
 
 class MessageAgentTool(Tool):
-    """Send a follow-up message to a running sub-agent."""
+    """Send a follow-up message to a idle sub-agent."""
 
     _manual_registration = True
 
@@ -175,8 +176,9 @@ class MessageAgentTool(Tool):
 
     def description(self) -> str:
         return (
-            "Send a follow-up message to a running background sub-agent. "
+            "Send a follow-up message to a idle sub-agent. "
             "Use this to provide additional context or instructions."
+            "Never use this tool when the sub-agent is still running to respond."
         )
 
     def parameters_schema(self) -> dict:
