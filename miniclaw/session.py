@@ -165,8 +165,6 @@ class Session:
             "[SESSION %s] _process entry: text_len=%d, history_len=%d",
             self.id, len(text), len(self.history),
         )
-        token = CancellationToken()
-        self._current_token = token
         interrupted_text: str | None = None
 
         try:
@@ -175,6 +173,11 @@ class Session:
 
                 # Restart loop: handles SessionControl("plan_execute")
                 while pending_text is not None:
+                    # Fresh token per iteration so a restart after
+                    # plan_execute is not poisoned by the previous
+                    # iteration's cancellation state.
+                    token = CancellationToken()
+                    self._current_token = token
                     interrupted_text = pending_text
                     restart_text: str | None = None
 

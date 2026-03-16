@@ -143,14 +143,15 @@ class CCAgent:
 
         try:
             while True:
-                # Check cancellation between queue reads
-                if token.is_cancelled:
-                    task.cancel()
-                    break
-
                 try:
                     tag, payload = await asyncio.wait_for(output_queue.get(), timeout=0.5)
                 except asyncio.TimeoutError:
+                    # Only check cancellation when the queue is idle so
+                    # that a pending plan_action is never skipped due to
+                    # a token that was cancelled by the SDK interrupt.
+                    if token.is_cancelled:
+                        task.cancel()
+                        break
                     continue
 
                 if tag == "done":
