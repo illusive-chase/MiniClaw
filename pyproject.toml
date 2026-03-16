@@ -28,7 +28,6 @@ packages = [
     "miniclaw.agent",
     "miniclaw.channels",
     "miniclaw.listeners",
-    "miniclaw.memory",
     "miniclaw.providers",
     "miniclaw.remote",
     "miniclaw.tools",
