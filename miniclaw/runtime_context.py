@@ -33,6 +33,7 @@ class RuntimeContext:
         agent_type: str,
         task: str,
         remote: str | None = None,
+        cwd: str | None = None,
     ) -> str:
         """Spawn a background sub-agent session.
 
@@ -46,7 +47,7 @@ class RuntimeContext:
         Returns the new session's ID.
         """
         if remote:
-            return await self._spawn_remote(agent_type, task, remote)
+            return await self._spawn_remote(agent_type, task, remote, cwd)
 
         from miniclaw.agent.config import AgentConfig
         from miniclaw.subagent_driver import SubAgentDriver
@@ -59,6 +60,7 @@ class RuntimeContext:
         # Create child session via Runtime
         agent_config = AgentConfig()
         child_session = self._runtime.create_session(agent_type, agent_config)
+        child_session.cwd_override = cwd
 
         # Create SubAgentDriver (dual-role: Channel for child, notifier for parent)
         driver = SubAgentDriver(
