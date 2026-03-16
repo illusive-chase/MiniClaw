@@ -112,7 +112,8 @@ class CCAgent:
             len(text), len(history), effective_model,
         )
         sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
-        options = self._build_options(sdk_session_id, effective_model, client_key=key)
+        plugctx_prompt = config.extra.get("_plugctx_prompt", "")
+        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt)
         logger.debug("[CC] Client ready: sdk_session_id=%s", sdk_session_id)
 
         reply_parts: list[str] = []
@@ -470,6 +471,7 @@ class CCAgent:
         sdk_session_id: str | None,
         model: str | None,
         client_key: str,
+        extra_prompt: str = "",
     ) -> ClaudeAgentOptions:
         opts: dict = {}
 
@@ -477,8 +479,13 @@ class CCAgent:
             "type": "preset",
             "preset": "claude_code",
         }
+        append_parts = []
         if self._system_prompt:
-            system_prompt_config["append"] = self._system_prompt
+            append_parts.append(self._system_prompt)
+        if extra_prompt:
+            append_parts.append(extra_prompt)
+        if append_parts:
+            system_prompt_config["append"] = "\n\n".join(append_parts)
         opts["system_prompt"] = system_prompt_config
 
         if sdk_session_id:

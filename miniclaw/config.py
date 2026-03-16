@@ -78,6 +78,10 @@ DEFAULT_CONFIG = {
         "thinking": {"type": "adaptive"},
         "effort": "high",
     },
+    "plugctx": {
+        "ctx_root": ".workspace/contexts",
+        "auto_load": [],
+    },
 }
 
 

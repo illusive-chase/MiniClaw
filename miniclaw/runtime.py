@@ -33,13 +33,14 @@ class Runtime:
       - Graceful shutdown (drain + persist)
     """
 
-    def __init__(self, session_manager: SessionManager) -> None:
+    def __init__(self, session_manager: SessionManager, plugctx_config: dict | None = None) -> None:
         self.sessions: dict[str, Session] = {}
         self._session_manager = session_manager
         self._agent_registry: dict[str, Callable[..., AgentProtocol]] = {}
         self._listeners: list[Listener] = []
         self._listener_tasks: list[asyncio.Task] = []
         self._shutting_down = False
+        self._plugctx_config = plugctx_config or {}
 
     # --- Agent registry ---
 
@@ -111,6 +112,9 @@ class Runtime:
         agent = self.create_agent(agent_type, config, runtime_context=ctx)
         session.agent = agent
 
+        # Phase 4: Create PlugCtxManager if configured
+        self._setup_plugctx(session)
+
         session.on_history_update = lambda _sid=sid: self.persist_session(_sid)
         self.sessions[sid] = session
         return session
@@ -162,6 +166,11 @@ class Runtime:
 
         self.sessions[forked.id] = forked
         forked.on_history_update = lambda _sid=forked.id: self.persist_session(_sid)
+
+        # Copy plugctx from source
+        source_ctx_paths = source.plugctx.loaded_paths() if source.plugctx is not None else []
+        self._setup_plugctx(forked, restore_paths=source_ctx_paths or None)
+
         logger.info(
             "Forked session %s -> %s (agent=%s)",
             source.id, forked.id, agent_type,
@@ -181,6 +190,32 @@ class Runtime:
         logger.info("Observer detached from session %s", session_id)
 
     # --- Persistence ---
+
+    def _setup_plugctx(
+        self,
+        session: Session,
+        restore_paths: list[str] | None = None,
+    ) -> None:
+        """Create and attach a PlugCtxManager to a session."""
+        if not self._plugctx_config:
+            return
+
+        from miniclaw.plugctx import PlugCtxManager
+
+        ctx_root = self._plugctx_config.get("ctx_root", ".workspace/contexts")
+        auto_load_paths = self._plugctx_config.get("auto_load", [])
+
+        mgr = PlugCtxManager(ctx_root=ctx_root, auto_load_paths=auto_load_paths)
+        session.plugctx = mgr
+
+        if restore_paths:
+            failed = mgr.restore_from_paths(restore_paths)
+            if failed:
+                logger.warning("Failed to restore contexts: %s", failed)
+        else:
+            failed = mgr.auto_load()
+            if failed:
+                logger.warning("Failed to auto-load contexts: %s", failed)
 
     def persist_session(self, session_id: str) -> None:
         """Save session to disk."""
@@ -204,6 +239,11 @@ class Runtime:
             metadata={
                 "forked_from": session.metadata.forked_from,
                 "tags": dict(session.metadata.tags),
+                "loaded_contexts": (
+                    session.plugctx.loaded_paths()
+                    if session.plugctx is not None
+                    else []
+                ),
             },
         )
         self._session_manager.save(legacy, session.history)
@@ -252,6 +292,11 @@ class Runtime:
 
         session.agent = agent
         self.sessions[session.id] = session
+
+        # Restore plugctx
+        loaded_contexts = loaded.metadata.get("loaded_contexts", []) if loaded.metadata else []
+        self._setup_plugctx(session, restore_paths=loaded_contexts or None)
+
         session.on_history_update = lambda _sid=session.id: self.persist_session(_sid)
         logger.info("Restored session %s (%d messages)", session.id, len(history))
         return session

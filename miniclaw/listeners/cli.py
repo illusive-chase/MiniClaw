@@ -158,6 +158,7 @@ class CLIListener(Listener):
                 "  /cost             Show usage stats\n"
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
+                "  /plugctx <cmd>    Manage loaded contexts (load/unload/list/status/info)\n"
                 "  /quit, /exit, /q  Exit the REPL",
                 title="Help",
                 border_style="cyan",
@@ -294,5 +295,112 @@ class CLIListener(Listener):
                 if hasattr(handler, "stream"):
                     handler.setLevel(level)
             console.print(f"[dim]Console log level set to: {level_name}[/dim]")
+
+        elif cmd == "plugctx":
+            await self._handle_plugctx(args, session, console)
+
         else:
             console.print(f"[red]Unknown command: /{cmd}. Type /help for available commands.[/red]")
+
+    async def _handle_plugctx(
+        self,
+        args: str,
+        session: Session,
+        console: Console,
+    ) -> None:
+        """Handle /plugctx subcommands."""
+        if session.plugctx is None:
+            console.print("[red]plugctx is not configured for this session.[/red]")
+            return
+
+        parts = args.split(maxsplit=1)
+        subcmd = parts[0].lower() if parts else ""
+        subargs = parts[1].strip() if len(parts) > 1 else ""
+
+        if subcmd == "load":
+            if not subargs:
+                console.print("[red]Usage: /plugctx load <dotted.path>[/red]")
+                return
+            result = session.plugctx.load(subargs)
+            if "error" in result:
+                console.print(f"[red]{result['error']}[/red]")
+                return
+            if result["loaded"]:
+                for p in result["loaded"]:
+                    console.print(f"  [green]+[/green] {p}")
+            if result["already_loaded"]:
+                for p in result["already_loaded"]:
+                    console.print(f"  [dim](already loaded) {p}[/dim]")
+            if result["failed"]:
+                for p in result["failed"]:
+                    console.print(f"  [red]! {p} (not found)[/red]")
+            console.print(f"[dim]Total context tokens: ~{result['total_tokens']:,}[/dim]")
+            if result["children"]:
+                console.print(f"[dim]Children: {', '.join(result['children'])}[/dim]")
+
+        elif subcmd == "unload":
+            if not subargs:
+                console.print("[red]Usage: /plugctx unload <dotted.path>[/red]")
+                return
+            result = session.plugctx.unload(subargs)
+            for w in result.get("warnings", []):
+                console.print(f"[yellow]{w}[/yellow]")
+            if result["unloaded"]:
+                console.print(f"[dim]Unloaded '{result['unloaded']}' (freed ~{result['freed_tokens']:,} tokens)[/dim]")
+            else:
+                console.print(f"[dim]{result['warnings'][0] if result['warnings'] else 'Nothing to unload.'}[/dim]")
+
+        elif subcmd == "list":
+            contexts = session.plugctx.list_contexts()
+            if not contexts:
+                console.print("[dim]No contexts found under ctx_root.[/dim]")
+                return
+            lines = []
+            for c in contexts:
+                marker = "[green]*[/green]" if c["loaded"] else " "
+                tokens = f"(~{c['token_estimate']:,} tokens)" if c["token_estimate"] else ""
+                lines.append(f"  {marker} {c['path']} {tokens}")
+            console.print(Panel("\n".join(lines), title="Contexts", border_style="cyan"))
+
+        elif subcmd == "status":
+            result = session.plugctx.status()
+            if not result["loaded"]:
+                console.print("[dim]No contexts loaded.[/dim]")
+                return
+            lines = []
+            for entry in result["loaded"]:
+                desc = f" — {entry['description']}" if entry["description"] else ""
+                lines.append(f"  {entry['path']} (~{entry['token_estimate']:,} tokens, {entry['source']}){desc}")
+            lines.append(f"\n  Total: ~{result['total_tokens']:,} tokens")
+            console.print(Panel("\n".join(lines), title="Loaded Contexts", border_style="cyan"))
+
+        elif subcmd == "info":
+            if not subargs:
+                console.print("[red]Usage: /plugctx info <dotted.path>[/red]")
+                return
+            result = session.plugctx.info(subargs)
+            if "error" in result:
+                console.print(f"[red]{result['error']}[/red]")
+                return
+            lines = [
+                f"  Path:     {result['path']}",
+                f"  Loaded:   {'yes' if result['loaded'] else 'no'}",
+                f"  Tokens:   ~{result['token_estimate']:,}",
+            ]
+            if result["name"]:
+                lines.append(f"  Name:     {result['name']}")
+            if result["description"]:
+                lines.append(f"  Desc:     {result['description']}")
+            if result["requires"]:
+                lines.append(f"  Requires: {', '.join(result['requires'])}")
+            if result["tags"]:
+                lines.append(f"  Tags:     {', '.join(result['tags'])}")
+            if result["children"]:
+                lines.append(f"  Children: {', '.join(result['children'])}")
+            lines.append(f"\n  Preview:\n{result['preview']}")
+            console.print(Panel("\n".join(lines), title=f"Context: {result['path']}", border_style="cyan"))
+
+        else:
+            console.print(
+                "[red]Usage: /plugctx <load|unload|list|status|info> [args][/red]"
+            )

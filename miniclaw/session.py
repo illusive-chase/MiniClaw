@@ -102,6 +102,7 @@ class Session:
 
         self._input_queue: asyncio.Queue[InputMessage] = asyncio.Queue()
         self.runtime_context: Any = None  # Set by Runtime; avoids circular import
+        self.plugctx: Any = None  # Set by Runtime; PlugCtxManager instance
 
         self._lock = asyncio.Lock()
         self._current_token: CancellationToken | None = None
@@ -180,6 +181,14 @@ class Session:
                     self._current_token = token
                     interrupted_text = pending_text
                     restart_text: str | None = None
+
+                    # Inject plugctx content into agent config
+                    if self.plugctx is not None:
+                        self.agent_config.extra["_plugctx_prompt"] = (
+                            self.plugctx.render_prompt_section()
+                        )
+                    else:
+                        self.agent_config.extra.pop("_plugctx_prompt", None)
 
                     async for event in self.agent.process(
                         pending_text,

@@ -130,6 +130,11 @@ class NativeAgent:
         if tool_names:
             system_parts.append(f"Available tools: {', '.join(tool_names)}")
 
+        # Add plugctx content (loaded contexts)
+        plugctx_content = config.extra.get("_plugctx_prompt", "")
+        if plugctx_content:
+            system_parts.append(plugctx_content)
+
         system_text = "\n\n".join(p for p in system_parts if p)
         if system_text:
             messages.append(ChatMessage(role="system", content=system_text))

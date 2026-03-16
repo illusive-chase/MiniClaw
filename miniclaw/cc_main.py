@@ -72,7 +72,7 @@ def main() -> None:
 
     # Build runtime
     session_manager = SessionManager(workspace_dir)
-    runtime = Runtime(session_manager)
+    runtime = Runtime(session_manager, plugctx_config=config.get("plugctx"))
 
     # Register agent factories
     runtime.register_agent("ccagent", build_ccagent)
