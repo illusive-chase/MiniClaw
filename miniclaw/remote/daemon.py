@@ -350,6 +350,11 @@ class RemoteDaemon:
                 agent_type, agent_config, session_id=session_id,
             )
 
+            # Apply client-requested cwd override
+            cwd = msg.get("cwd")
+            if cwd:
+                session.cwd_override = cwd
+
             handler = DaemonSessionHandler(session_id, ws)
             session.bind_primary(handler)
 

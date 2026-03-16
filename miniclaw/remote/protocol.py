@@ -177,6 +177,7 @@ def serialize_spawn(
     agent_type: str,
     task: str,
     agent_config: dict[str, Any] | None = None,
+    cwd: str | None = None,
 ) -> dict[str, Any]:
     """Serialize a spawn request for the wire."""
     msg: dict[str, Any] = {
@@ -187,6 +188,8 @@ def serialize_spawn(
     }
     if agent_config is not None:
         msg["agent_config"] = agent_config
+    if cwd is not None:
+        msg["cwd"] = cwd
     return msg
 
 

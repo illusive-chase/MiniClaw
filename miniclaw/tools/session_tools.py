@@ -54,6 +54,13 @@ class LaunchAgentTool(Tool):
                         "sub-agent runs on a remote daemon."
                     ),
                 },
+                "cwd": {
+                    "type": "string",
+                    "description": (
+                        "Optional working directory. If provided, the sub-agent "
+                        "runs in this directory instead."
+                    ),
+                },
             },
             "required": ["type", "task"],
         }
@@ -62,6 +69,7 @@ class LaunchAgentTool(Tool):
         agent_type = args.get("type", "ccagent")
         task = args.get("task", "")
         remote = args.get("remote")
+        cwd = args.get("cwd")
 
         if not task:
             return ToolResult(output="Error: 'task' is required.", success=False)
@@ -71,6 +79,7 @@ class LaunchAgentTool(Tool):
                 agent_type=agent_type,
                 task=task,
                 remote=remote,
+                cwd=cwd,
             )
             location = f" (remote: {remote})" if remote else ""
             return ToolResult(
@@ -79,6 +88,7 @@ class LaunchAgentTool(Tool):
                     f"Session ID: {session_id}\n"
                     f"Type: {agent_type}\n"
                     f"Task: {task[:200]}\n"
+                    f"CWD: {cwd or 'default'}\n"
                 )
             )
         except Exception as e:

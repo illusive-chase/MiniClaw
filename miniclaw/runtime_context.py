@@ -90,6 +90,7 @@ class RuntimeContext:
         agent_type: str,
         task: str,
         remote: str,
+        cwd: str | None = None,
     ) -> str:
         """Spawn a sub-agent on a remote daemon via WebSocket."""
         from miniclaw.remote.remote_driver import RemoteSubAgentDriver
@@ -104,12 +105,15 @@ class RuntimeContext:
             agent_type, remote, ws_url, self._parent.id, task,
         )
 
+        if not cwd:
+            cwd, _ = self._parent.effective_cwd()
         driver = RemoteSubAgentDriver(
             session_id=session_id,
             parent_session=self._parent,
             ws_url=ws_url,
             agent_type=agent_type,
             task=task,
+            cwd=cwd,
         )
         self._drivers[session_id] = driver
         driver.start()
