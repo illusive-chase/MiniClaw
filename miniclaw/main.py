@@ -44,7 +44,7 @@ def main() -> None:
     agent_config = AgentConfig(
         model=config["provider"].get("model", "gpt-4o"),
         system_prompt=agent_cfg.get("system_prompt", ""),
-        max_iterations=agent_cfg.get("max_tool_iterations", 30),
+        max_iterations=agent_cfg.get("max_tool_iterations", 50),
         temperature=config["provider"].get("temperature", 0.7),
         memory_enabled=True,
     )
