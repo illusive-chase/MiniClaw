@@ -6,8 +6,8 @@ from .base import Tool, ToolResult
 
 
 class FileEditTool(Tool):
-    def __init__(self, workspace_dir: str = ".workspace"):
-        self._workspace_dir = Path(workspace_dir)
+    def __init__(self, cwd: str = "."):
+        self._cwd = Path(cwd)
 
     def name(self) -> str:
         return "file_edit"
@@ -45,7 +45,7 @@ class FileEditTool(Tool):
             return ToolResult(output="No old_string provided", success=False)
         path = Path(path_str)
         if not path.is_absolute():
-            path = self._workspace_dir / path
+            path = self._cwd / path
         try:
             content = path.read_text()
             count = content.count(old_string)

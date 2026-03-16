@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.native import NativeAgent
@@ -68,7 +69,7 @@ def main() -> None:
             default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
             permission_mode=cc_cfg.get("permission_mode", "default"),
             allowed_tools=cc_cfg.get("allowed_tools"),
-            cwd=cc_cfg.get("cwd"),
+            cwd=cc_cfg.get("cwd") or os.getcwd(),
             max_turns=cc_cfg.get("max_turns"),
             thinking=cc_cfg.get("thinking"),
             effort=cc_cfg.get("effort"),

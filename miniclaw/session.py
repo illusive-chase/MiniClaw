@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -189,6 +190,13 @@ class Session:
                         )
                     else:
                         self.agent_config.extra.pop("_plugctx_prompt", None)
+
+                    # Inject effective cwd for tools
+                    if self.plugctx is not None:
+                        project_cwd = self.plugctx.active_project_cwd()
+                        self.agent_config.extra["_effective_cwd"] = project_cwd or os.getcwd()
+                    else:
+                        self.agent_config.extra["_effective_cwd"] = os.getcwd()
 
                     async for event in self.agent.process(
                         pending_text,

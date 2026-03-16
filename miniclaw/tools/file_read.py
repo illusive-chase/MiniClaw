@@ -6,8 +6,8 @@ from .base import Tool, ToolResult
 
 
 class FileReadTool(Tool):
-    def __init__(self, workspace_dir: str = ".workspace"):
-        self._workspace_dir = Path(workspace_dir)
+    def __init__(self, cwd: str = "."):
+        self._cwd = Path(cwd)
 
     def name(self) -> str:
         return "file_read"
@@ -33,7 +33,7 @@ class FileReadTool(Tool):
             return ToolResult(output="No path provided", success=False)
         path = Path(path_str)
         if not path.is_absolute():
-            path = self._workspace_dir / path
+            path = self._cwd / path
         try:
             content = path.read_text(errors="replace")
             if len(content) > 50000:

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -16,6 +18,7 @@ from rich.panel import Panel
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.channels.cli import CLIChannel
+from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
 from miniclaw.listeners.base import Listener
 from miniclaw.log import _console
 
@@ -158,7 +161,7 @@ class CLIListener(Listener):
                 "  /cost             Show usage stats\n"
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
-                "  /plugctx <cmd>    Manage loaded contexts (load/unload/list/status/info)\n"
+                "  /plugctx <cmd>    Manage loaded contexts (init/load/unload/list/status/info)\n"
                 "  /quit, /exit, /q  Exit the REPL",
                 title="Help",
                 border_style="cyan",
@@ -325,6 +328,8 @@ class CLIListener(Listener):
             if "error" in result:
                 console.print(f"[red]{result['error']}[/red]")
                 return
+            for w in result.get("warnings", []):
+                console.print(f"[yellow]{w}[/yellow]")
             if result["loaded"]:
                 for p in result["loaded"]:
                     console.print(f"  [green]+[/green] {p}")
@@ -400,7 +405,99 @@ class CLIListener(Listener):
             lines.append(f"\n  Preview:\n{result['preview']}")
             console.print(Panel("\n".join(lines), title=f"Context: {result['path']}", border_style="cyan"))
 
+        elif subcmd == "init":
+            await self._handle_plugctx_init(session, console)
+
         else:
             console.print(
-                "[red]Usage: /plugctx <load|unload|list|status|info> [args][/red]"
+                "[red]Usage: /plugctx <init|load|unload|list|status|info> [args][/red]"
             )
+
+    async def _handle_plugctx_init(
+        self,
+        session: Session,
+        console: Console,
+    ) -> None:
+        """Interactive scaffold for a new context folder."""
+        channel = session.primary_channel
+        assert isinstance(channel, CLIChannel)
+
+        # Q1: Context path
+        q1 = InteractionRequest(
+            id=str(uuid4()),
+            type=InteractionType.ASK_USER,
+            tool_name="plugctx_init",
+            tool_input={
+                "questions": [
+                    {
+                        "question": "Context dotted path? (e.g. project.myapp or skill.coding)",
+                        "options": [
+                            {"label": "project.<name>", "description": "Project-type context"},
+                            {"label": "skill.<name>", "description": "Skill-type context"},
+                        ],
+                    },
+                    {
+                        "question": "Context type?",
+                        "options": [
+                            {"label": "project", "description": "Sets effective working directory for tools"},
+                            {"label": "skill", "description": "Only injects prompt content"},
+                        ],
+                    },
+                    {
+                        "question": "Dependencies? (comma-separated dotted paths, or 'none')",
+                        "options": [
+                            {"label": "none", "description": "No dependencies"},
+                        ],
+                    },
+                ],
+            },
+        )
+        r1 = await channel._prompt_ask_user(q1)
+        answers = r1.updated_input.get("answers", {}) if r1.updated_input else {}
+
+        dotted_path = answers.get(
+            "Context dotted path? (e.g. project.myapp or skill.coding)", ""
+        ).strip()
+        if not dotted_path:
+            console.print("[red]No path provided.[/red]")
+            return
+
+        ctx_type = answers.get("Context type?", "skill").strip().lower()
+        if ctx_type not in ("project", "skill"):
+            ctx_type = "skill"
+
+        deps_raw = answers.get(
+            "Dependencies? (comma-separated dotted paths, or 'none')", "none"
+        ).strip()
+        requires: list[str] = []
+        if deps_raw.lower() != "none" and deps_raw:
+            requires = [d.strip() for d in deps_raw.split(",") if d.strip()]
+
+        workspace = ""
+        if ctx_type == "project":
+            q2 = InteractionRequest(
+                id=str(uuid4()),
+                type=InteractionType.ASK_USER,
+                tool_name="plugctx_init",
+                tool_input={
+                    "questions": [
+                        {
+                            "question": "Workspace folder path?",
+                            "options": [
+                                {"label": os.getcwd(), "description": "Current directory"},
+                            ],
+                        },
+                    ],
+                },
+            )
+            r2 = await channel._prompt_ask_user(q2)
+            ws_answers = r2.updated_input.get("answers", {}) if r2.updated_input else {}
+            workspace = ws_answers.get("Workspace folder path?", os.getcwd()).strip()
+
+        result = session.plugctx.init_context(dotted_path, ctx_type, requires, workspace)
+        if result.get("error"):
+            console.print(f"[red]Error: {result['error']}[/red]")
+        elif result.get("created"):
+            console.print(f"[green]Created context '{dotted_path}' at {result['path']}[/green]")
+        else:
+            console.print(f"[dim]Context not created: {result}[/dim]")

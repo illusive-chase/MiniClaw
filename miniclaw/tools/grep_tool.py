@@ -7,8 +7,8 @@ from .base import Tool, ToolResult
 
 
 class GrepTool(Tool):
-    def __init__(self, workspace_dir: str = ".workspace"):
-        self._workspace_dir = Path(workspace_dir)
+    def __init__(self, cwd: str = "."):
+        self._cwd = Path(cwd)
 
     def name(self) -> str:
         return "grep"
@@ -59,9 +59,9 @@ class GrepTool(Tool):
         if target:
             search_path = Path(target)
             if not search_path.is_absolute():
-                search_path = self._workspace_dir / search_path
+                search_path = self._cwd / search_path
         else:
-            search_path = self._workspace_dir
+            search_path = self._cwd
 
         if not search_path.exists():
             return ToolResult(output=f"Path not found: {search_path}", success=False)
@@ -84,7 +84,7 @@ class GrepTool(Tool):
                     text = fpath.read_text(errors="replace")
                 except Exception:
                     continue
-                rel = str(fpath.relative_to(self._workspace_dir)) if str(fpath).startswith(str(self._workspace_dir)) else str(fpath)
+                rel = str(fpath.relative_to(self._cwd)) if str(fpath).startswith(str(self._cwd)) else str(fpath)
                 for line_num, line in enumerate(text.splitlines(), 1):
                     if regex.search(line):
                         results.append(f"{rel}:{line_num}: {line.rstrip()}")

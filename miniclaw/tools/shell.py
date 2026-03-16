@@ -6,8 +6,8 @@ from .base import Tool, ToolResult
 
 
 class ShellTool(Tool):
-    def __init__(self, workspace_dir: str = ".workspace"):
-        self._workspace_dir = workspace_dir
+    def __init__(self, cwd: str = "."):
+        self._cwd = cwd
 
     def name(self) -> str:
         return "shell"
@@ -41,7 +41,7 @@ class ShellTool(Tool):
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=self._workspace_dir,
+                cwd=self._cwd,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             output = stdout.decode(errors="replace")

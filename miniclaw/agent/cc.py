@@ -113,7 +113,8 @@ class CCAgent:
         )
         sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
         plugctx_prompt = config.extra.get("_plugctx_prompt", "")
-        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt)
+        effective_cwd = config.extra.get("_effective_cwd") or self._cwd
+        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd)
         logger.debug("[CC] Client ready: sdk_session_id=%s", sdk_session_id)
 
         reply_parts: list[str] = []
@@ -472,6 +473,7 @@ class CCAgent:
         model: str | None,
         client_key: str,
         extra_prompt: str = "",
+        cwd: str | None = None,
     ) -> ClaudeAgentOptions:
         opts: dict = {}
 
@@ -496,8 +498,10 @@ class CCAgent:
             opts["permission_mode"] = self._permission_mode
         if self._allowed_tools:
             opts["allowed_tools"] = self._allowed_tools
-        if self._cwd:
-            opts["cwd"] = self._cwd
+
+        effective_cwd = cwd or self._cwd
+        if effective_cwd:
+            opts["cwd"] = effective_cwd
         if self._max_turns is not None:
             opts["max_turns"] = self._max_turns
 

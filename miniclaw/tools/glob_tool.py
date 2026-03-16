@@ -6,8 +6,8 @@ from .base import Tool, ToolResult
 
 
 class GlobTool(Tool):
-    def __init__(self, workspace_dir: str = ".workspace"):
-        self._workspace_dir = Path(workspace_dir)
+    def __init__(self, cwd: str = "."):
+        self._cwd = Path(cwd)
 
     def name(self) -> str:
         return "glob"
@@ -44,9 +44,9 @@ class GlobTool(Tool):
         if base:
             search_dir = Path(base)
             if not search_dir.is_absolute():
-                search_dir = self._workspace_dir / search_dir
+                search_dir = self._cwd / search_dir
         else:
-            search_dir = self._workspace_dir
+            search_dir = self._cwd
 
         if not search_dir.is_dir():
             return ToolResult(output=f"Directory not found: {search_dir}", success=False)

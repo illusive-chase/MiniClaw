@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 
 from miniclaw.config import load_config
 from miniclaw.log import setup_console_logging, setup_file_logging
@@ -63,7 +64,7 @@ def main() -> None:
             default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
             permission_mode=cc_cfg.get("permission_mode", "default"),
             allowed_tools=cc_cfg.get("allowed_tools"),
-            cwd=cc_cfg.get("cwd"),
+            cwd=cc_cfg.get("cwd") or os.getcwd(),
             max_turns=cc_cfg.get("max_turns"),
             thinking=cc_cfg.get("thinking"),
             effort=cc_cfg.get("effort"),

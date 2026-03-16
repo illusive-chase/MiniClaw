@@ -40,6 +40,13 @@ class ContextRegistry:
             if path in e.manifest.requires
         ]
 
+    def active_project(self) -> ContextEntry | None:
+        """Return the first loaded context with type == 'project', or None."""
+        for entry in self._entries.values():
+            if entry.manifest.type == "project":
+                return entry
+        return None
+
     def render_prompt_section(self) -> str:
         """Render the loaded contexts into a system prompt section."""
         if not self._entries:

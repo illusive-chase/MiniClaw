@@ -3,6 +3,7 @@
 import importlib
 import inspect
 import logging
+import os
 from pathlib import Path
 
 from .base import Tool
@@ -27,6 +28,12 @@ class ToolRegistry:
 
     def list_names(self) -> list[str]:
         return list(self._tools.keys())
+
+    def set_cwd(self, cwd: str) -> None:
+        """Update cwd on all tools that support it."""
+        for tool in self._tools.values():
+            if hasattr(tool, '_cwd'):
+                tool._cwd = Path(cwd) if isinstance(tool._cwd, Path) else cwd
 
 
 def discover_tools(tools_dir: Path) -> list[Tool]:
@@ -57,7 +64,7 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
         runtime_context: Optional RuntimeContext for session management tools.
     """
     registry = ToolRegistry()
-    workspace_dir = config.get("agent", {}).get("workspace_dir", ".workspace")
+    cwd = os.getcwd()
     deny_set = set(config.get("agent", {}).get("tool_deny_list", []))
 
     # Auto-discover tool classes
@@ -68,8 +75,8 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
         try:
             sig = inspect.signature(cls.__init__)
             params = list(sig.parameters.keys())
-            if "workspace_dir" in params:
-                tool = cls(workspace_dir=workspace_dir)
+            if "cwd" in params:
+                tool = cls(cwd=cwd)
             else:
                 tool = cls()
             if tool.name() in deny_set:

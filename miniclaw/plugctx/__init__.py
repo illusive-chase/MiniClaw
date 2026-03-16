@@ -8,10 +8,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import yaml
+
 from miniclaw.plugctx.loader import (
     ContextEntry,
     ContextManifest,
     discover_all_contexts,
+    dotted_to_fs_path,
     list_child_contexts,
     load_context_entry,
 )
@@ -46,15 +49,77 @@ class PlugCtxManager:
 
     # --- CLI command handlers (return dicts for transport-agnostic formatting) ---
 
+    def init_context(
+        self, dotted_path: str, ctx_type: str, requires: list[str], workspace: str = ""
+    ) -> dict:
+        """Create a new context folder with scaffold files.
+
+        Returns: {path, created: True/False, error: str|None}
+        """
+        fs_path = dotted_to_fs_path(self._ctx_root, dotted_path)
+        if fs_path.exists():
+            return {"path": str(fs_path), "created": False, "error": f"Directory already exists: {fs_path}"}
+
+        # Derive name from last path segment
+        name = dotted_path.rsplit(".", 1)[-1]
+
+        try:
+            fs_path.mkdir(parents=True, exist_ok=True)
+
+            # Write CONTEXT.md
+            context_md = (
+                f"# {name}\n"
+                "\n"
+                "<!-- Describe this context here. This content is injected into the agent's system prompt. -->\n"
+            )
+            (fs_path / "CONTEXT.md").write_text(context_md, encoding="utf-8")
+
+            # Write manifest.yaml
+            manifest_data: dict = {
+                "name": name,
+                "description": "",
+                "type": ctx_type,
+                "requires": requires,
+                "tags": [],
+            }
+            if ctx_type == "project" and workspace:
+                manifest_data["workspace"] = workspace
+            (fs_path / "manifest.yaml").write_text(
+                yaml.dump(manifest_data, default_flow_style=False, sort_keys=False),
+                encoding="utf-8",
+            )
+
+            # Write .gitignore
+            gitignore = (
+                "# Ignore everything by default\n"
+                "*\n"
+                "\n"
+                "# Allow context files\n"
+                "!CONTEXT.md\n"
+                "!manifest.yaml\n"
+                "!.gitignore\n"
+                "\n"
+                "# Uncomment to include additional files:\n"
+                "# !scripts/\n"
+                "# !scripts/**\n"
+            )
+            (fs_path / ".gitignore").write_text(gitignore, encoding="utf-8")
+
+            logger.info("Created context '%s' at %s", dotted_path, fs_path)
+            return {"path": str(fs_path), "created": True, "error": None}
+        except Exception as e:
+            return {"path": str(fs_path), "created": False, "error": str(e)}
+
     def load(self, dotted_path: str) -> dict:
         """Load a context and its dependencies.
 
         Returns: {loaded: [...], already_loaded: [...], failed: [...],
-                  total_tokens: int, children: [...]}
+                  total_tokens: int, children: [...], warnings: [...]}
         """
         loaded: list[str] = []
         already_loaded: list[str] = []
         failed: list[str] = []
+        warnings: list[str] = []
 
         # Resolve dependencies
         try:
@@ -71,7 +136,25 @@ class PlugCtxManager:
                 "error": str(e),
                 "total_tokens": self._registry.total_tokens(),
                 "children": [],
+                "warnings": [],
             }
+
+        # Project exclusivity: check if target is a project and swap if needed
+        try:
+            target_entry = load_context_entry(self._ctx_root, dotted_path)
+            if target_entry.manifest.type == "project":
+                existing_project = self._registry.active_project()
+                if existing_project is not None and existing_project.path != dotted_path:
+                    warnings.append(
+                        f"Swapping project ctx '{existing_project.path}' -> '{dotted_path}'"
+                    )
+                    self._registry.remove(existing_project.path)
+                    logger.info(
+                        "Unloaded project context '%s' (swapped for '%s')",
+                        existing_project.path, dotted_path,
+                    )
+        except FileNotFoundError:
+            pass  # will be caught below during load
 
         # Load each in dependency order
         for path in load_order:
@@ -98,6 +181,7 @@ class PlugCtxManager:
             "failed": failed,
             "total_tokens": self._registry.total_tokens(),
             "children": children,
+            "warnings": warnings,
         }
 
     def unload(self, dotted_path: str) -> dict:
@@ -190,6 +274,13 @@ class PlugCtxManager:
         }
 
     # --- Agent integration ---
+
+    def active_project_cwd(self) -> str | None:
+        """Return workspace path of the active project-type context, or None."""
+        project = self._registry.active_project()
+        if project is not None and project.manifest.workspace:
+            return project.manifest.workspace
+        return None
 
     def render_prompt_section(self) -> str:
         """Render all loaded contexts as a system prompt section."""

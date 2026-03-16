@@ -19,6 +19,8 @@ class ContextManifest:
     description: str = ""
     requires: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
+    type: str = "skill"       # "project" | "skill"
+    workspace: str = ""       # absolute path to external folder (project-type only)
 
 
 @dataclass
@@ -72,6 +74,8 @@ def load_context_entry(
                 description=data.get("description", ""),
                 requires=data.get("requires", []),
                 tags=data.get("tags", []),
+                type=data.get("type", "skill"),
+                workspace=data.get("workspace", ""),
             )
         except Exception:
             logger.warning("Failed to parse manifest.yaml for '%s'", dotted_path)
