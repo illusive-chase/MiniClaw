@@ -57,6 +57,10 @@ class RuntimeContext:
             agent_type, self._parent.id, task,
         )
 
+        # Inherit parent's effective CWD when none explicitly provided
+        if not cwd:
+            cwd, _ = self._parent.effective_cwd()
+
         # Create child session via Runtime
         agent_config = AgentConfig()
         child_session = self._runtime.create_session(agent_type, agent_config)

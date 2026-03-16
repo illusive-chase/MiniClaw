@@ -33,7 +33,7 @@ from miniclaw.types import AgentEvent
 logger = logging.getLogger(__name__)
 
 # Grace period (seconds) before orphaned sessions are reaped.
-DEFAULT_GRACE_PERIOD = 300  # 5 min
+DEFAULT_GRACE_PERIOD = 1800  # 30 min
 DEFAULT_MAX_SESSIONS = 10
 
 
