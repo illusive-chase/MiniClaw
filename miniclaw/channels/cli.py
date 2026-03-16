@@ -252,7 +252,7 @@ class CLIChannel(Channel):
     async def replay(self, history: list[ChatMessage]) -> None:
         for msg in history:
             if msg.role == "user" and msg.content:
-                self._console.print(f"\n[bold green]You:[/] {msg.content}")
+                self._console.print(Panel(msg.content, title="You", border_style="green"))
             elif msg.role == "assistant" and msg.content:
                 self._console.print(Panel(Markdown(msg.content), title="Assistant", border_style="blue"))
 
