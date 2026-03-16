@@ -26,6 +26,7 @@ from miniclaw.remote.protocol import (
     serialize_interaction_response,
     serialize_send_message,
     serialize_spawn,
+    serialize_terminate,
 )
 from miniclaw.types import AgentEvent
 
@@ -318,6 +319,31 @@ class RemoteSubAgentDriver(Channel):
         if self._ws is not None and not self._ws.closed:
             msg = serialize_cancel(self._session_id)
             asyncio.create_task(self._ws.send_json(msg))
+
+    async def close(self) -> None:
+        """Graceful shutdown: tell daemon to reap, then tear down local state."""
+        # 1. Send terminate (best-effort — daemon may already be gone)
+        if self._ws is not None and not self._ws.closed:
+            try:
+                await self._ws.send_json(serialize_terminate(self._session_id))
+            except Exception:
+                pass
+
+        # 2. Deny all pending interactions to unblock waiting futures
+        self._deny_all_pending("Driver shutting down")
+
+        # 3. Cancel interaction waiter tasks
+        for task in self._waiter_tasks.values():
+            task.cancel()
+        self._waiter_tasks.clear()
+
+        # 4. Cancel main _run() task (its finally block closes WS + aiohttp session)
+        if self._task_handle is not None and not self._task_handle.done():
+            self._task_handle.cancel()
+            try:
+                await self._task_handle
+            except (asyncio.CancelledError, Exception):
+                pass
 
     def _deny_all_pending(self, reason: str) -> None:
         """Deny all pending interactions (on disconnect)."""

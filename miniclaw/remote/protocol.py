@@ -2,7 +2,7 @@
 
 JSON messages over WebSocket, multiplexed by session_id.
 
-Client -> Server: spawn, interaction_response, send_message, cancel, ping
+Client -> Server: spawn, interaction_response, send_message, cancel, terminate, ping
 Server -> Client: spawn_ack, text_delta, activity, interaction_request,
                   interrupted, usage, turn_complete, session_error, pong
 """
@@ -203,6 +203,11 @@ def serialize_send_message(session_id: str, text: str) -> dict[str, Any]:
 
 def serialize_cancel(session_id: str) -> dict[str, Any]:
     return {"type": "cancel", "session_id": session_id}
+
+
+def serialize_terminate(session_id: str) -> dict[str, Any]:
+    """Ask the daemon to immediately reap a session (graceful shutdown)."""
+    return {"type": "terminate", "session_id": session_id}
 
 
 def serialize_ping() -> dict[str, Any]:

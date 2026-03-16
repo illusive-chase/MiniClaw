@@ -307,6 +307,8 @@ class RemoteDaemon:
             self._handle_send_message(msg)
         elif msg_type == "cancel":
             self._handle_cancel(msg)
+        elif msg_type == "terminate":
+            self._handle_terminate(msg)
         else:
             logger.warning("Unknown message type: %s", msg_type)
 
@@ -411,6 +413,17 @@ class RemoteDaemon:
             return
         managed.session.interrupt()
         managed.last_active = time.monotonic()
+
+    def _handle_terminate(self, msg: dict[str, Any]) -> None:
+        """Immediately reap a session (client graceful shutdown)."""
+        session_id = msg.get("session_id", "")
+        if not session_id:
+            return
+        managed = self._managed.pop(session_id, None)
+        if managed:
+            logger.info("[DAEMON] Terminating session %s (client requested)", session_id)
+            managed.handler.cancel_consumer()
+            managed.session.interrupt()
 
     # --- Session reaper ---
 

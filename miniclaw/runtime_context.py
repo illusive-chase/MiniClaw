@@ -262,3 +262,14 @@ class RuntimeContext:
         else:
             driver._child_session.interrupt()
         return f"Sub-agent {session_id} interrupted"
+
+    async def shutdown(self) -> None:
+        """Close all sub-agent drivers (sends terminate to remote daemons)."""
+        for driver in list(self._drivers.values()):
+            try:
+                if hasattr(driver, "close"):
+                    await driver.close()
+                elif hasattr(driver, "_child_session"):
+                    driver._child_session.interrupt()
+            except Exception as e:
+                logger.error("Error closing sub-agent driver: %s", e)

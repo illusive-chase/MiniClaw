@@ -379,6 +379,14 @@ class Runtime:
                 except Exception as e:
                     logger.error("Error shutting down agent: %s", e)
 
+        # Shutdown runtime contexts (notify remote daemons to reap sessions)
+        for session in self.sessions.values():
+            if session.runtime_context is not None:
+                try:
+                    await session.runtime_context.shutdown()
+                except Exception as e:
+                    logger.error("Error shutting down runtime context: %s", e)
+
         # Close all SSH tunnels
         await self._tunnel_manager.close_all()
 
