@@ -26,7 +26,7 @@ def main() -> None:
     config = load_config()
     log_cfg = config.get("logging", {})
     file_level = getattr(logging, log_cfg.get("file_level", "warning").upper(), logging.WARNING)
-    workspace_dir_cfg = config.get("agent", {}).get("workspace_dir", ".workspace")
+    workspace_dir_cfg = config["agent"]["workspace_dir"]
     setup_file_logging(file_level, workspace_dir_cfg)
 
     console_level_str = log_cfg.get("console_level", "").upper()
@@ -47,7 +47,7 @@ def main() -> None:
     logger.info("Starting MiniClaw (CCAgent)")
 
     cc_cfg = config.get("ccagent", {})
-    workspace_dir = config.get("agent", {}).get("workspace_dir", ".workspace")
+    workspace_dir = config["agent"]["workspace_dir"]
 
     # Build agent config
     agent_config = AgentConfig(

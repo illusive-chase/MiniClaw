@@ -225,7 +225,7 @@ class RemoteDaemon:
         from miniclaw.runtime import Runtime
 
         cc_cfg = self._config.get("ccagent", {})
-        workspace_dir = self._config.get("agent", {}).get("workspace_dir", ".workspace")
+        workspace_dir = self._config["agent"]["workspace_dir"]
 
         def build_ccagent(cfg: AgentConfig, runtime_context: Any = None) -> Any:
             return CCAgent(

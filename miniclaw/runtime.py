@@ -12,13 +12,11 @@ import os
 from copy import deepcopy
 from typing import Any, Callable
 
-from miniclaw.providers.base import ChatMessage
-from miniclaw.persistence import SessionManager
-
 from miniclaw.agent.config import AgentConfig
 from miniclaw.agent.protocol import AgentProtocol
 from miniclaw.channels.base import Channel
 from miniclaw.listeners.base import Listener
+from miniclaw.persistence import SessionManager
 from miniclaw.session import Session, SessionMetadata, generate_session_id
 
 logger = logging.getLogger(__name__)
@@ -212,7 +210,7 @@ class Runtime:
 
         from miniclaw.plugctx import PlugCtxManager
 
-        ctx_root = self._plugctx_config.get("ctx_root", ".workspace/contexts")
+        ctx_root = self._plugctx_config["ctx_root"]
         auto_load_paths = self._plugctx_config.get("auto_load", [])
 
         mgr = PlugCtxManager(ctx_root=ctx_root, auto_load_paths=auto_load_paths)

@@ -12,7 +12,7 @@ def create_listener(
     config: dict,
     agent_type: str,
     agent_config: AgentConfig,
-    workspace_dir: str = ".workspace",
+    workspace_dir: str,
 ) -> Listener:
     """Create a listener based on ``config["channel"]["type"]``."""
     channel_cfg = config.get("channel", {})

@@ -21,7 +21,7 @@ def main() -> None:
     config = load_config()
     log_cfg = config.get("logging", {})
     file_level = getattr(logging, log_cfg.get("file_level", "warning").upper(), logging.WARNING)
-    workspace_dir_cfg = config.get("agent", {}).get("workspace_dir", ".workspace")
+    workspace_dir_cfg = config["agent"]["workspace_dir"]
     setup_file_logging(file_level, workspace_dir_cfg)
 
     console_level_str = log_cfg.get("console_level", "").upper()
@@ -35,7 +35,7 @@ def main() -> None:
 
     # Build components
     agent_cfg = config.get("agent", {})
-    workspace_dir = agent_cfg.get("workspace_dir", ".workspace")
+    workspace_dir = agent_cfg["workspace_dir"]
 
     provider = create_provider(config["provider"])
 

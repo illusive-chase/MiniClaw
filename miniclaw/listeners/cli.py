@@ -44,7 +44,7 @@ class CLIListener(Listener):
         self,
         agent_type: str = "native",
         agent_config: AgentConfig | None = None,
-        workspace_dir: str = ".workspace",
+        workspace_dir: str = "",
     ) -> None:
         self._agent_type = agent_type
         self._agent_config = agent_config or AgentConfig()
