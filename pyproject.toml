@@ -18,11 +18,10 @@ dependencies = [
 ]
 
 [project.scripts]
-miniclaw = "main:main"
-minicode = "cc_main:main"
+miniclaw = "miniclaw.main:main"
+minicode = "miniclaw.cc_main:main"
 
 [tool.setuptools]
-py-modules = ["main", "cc_main"]
 packages = [
     "miniclaw",
     "miniclaw.agent",
@@ -30,6 +29,5 @@ packages = [
     "miniclaw.listeners",
     "miniclaw.memory",
     "miniclaw.providers",
-    "miniclaw.subagent",
     "miniclaw.tools",
 ]
