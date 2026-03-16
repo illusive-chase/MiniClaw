@@ -13,6 +13,11 @@ MiniClaw ships two agent backends:
 
 Both backends produce the same `AgentEvent` async stream consumed by Channels.
 
+## Python Environment
+
+- **Python Version:** 3.12
+- **Python Executable:** `/Users/bytedance/miniconda3/bin/python`
+
 ## Architecture
 
 ```

@@ -39,6 +39,10 @@ class FileWriteTool(Tool):
         path = Path(path_str)
         if not path.is_absolute():
             path = self._cwd / path
+        resolved = path.resolve()
+        if not resolved.is_relative_to(self._cwd.resolve()):
+            return ToolResult(output=f"Path {path_str} is outside the working directory", success=False)
+        path = resolved
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content)
