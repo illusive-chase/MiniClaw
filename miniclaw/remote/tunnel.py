@@ -84,10 +84,25 @@ class SSHTunnel:
             stderr = b""
             if self._process.stderr:
                 stderr = await self._process.stderr.read()
-            raise TunnelError(
+            stderr_text = stderr.decode(errors="replace").strip()
+            msg = (
                 f"SSH tunnel exited immediately (rc={self._process.returncode}): "
-                f"{stderr.decode(errors='replace').strip()}"
+                f"{stderr_text}"
             )
+            # Detect authentication failures and suggest ssh-copy-id.
+            if "permission denied" in stderr_text.lower():
+                copy_id_cmd = "ssh-copy-id"
+                if self._ssh_key:
+                    copy_id_cmd += f" -i {self._ssh_key}"
+                if self._ssh_port != 22:
+                    copy_id_cmd += f" -p {self._ssh_port}"
+                copy_id_cmd += f" {destination}"
+                msg += (
+                    f"\n\nHint: SSH key authentication failed. "
+                    f"Make sure your public key is registered on the remote host.\n"
+                    f"You can copy it with:\n  {copy_id_cmd}"
+                )
+            raise TunnelError(msg)
         except asyncio.TimeoutError:
             # Process is still running after 5s — tunnel is up.
             pass

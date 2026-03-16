@@ -96,7 +96,7 @@ def setup_console_logging(console_level: int) -> RichHandler:
         console=_console,
         level=console_level,
         rich_tracebacks=True,
-        tracebacks_show_locals=True,
+        tracebacks_show_locals=False,
         show_time=True,
         show_path=True,
     )

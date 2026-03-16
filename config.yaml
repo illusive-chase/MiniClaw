@@ -17,6 +17,14 @@ agent:
   max_tool_iterations: 50
   workspace_dir: ".workspace"
 
+remotes:
+  autodl4090:
+    ssh_host: "connect.nmb1.seetacloud.com"
+    ssh_user: "yekai"
+    ssh_port: 14465
+    daemon_port: 9100
+    local_port: 0 # auto-assigned
+
 logging:
   file_level: "debug"
   console_level: "info"

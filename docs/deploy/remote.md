@@ -273,6 +273,7 @@ The NativeAgent can then call:
 
 - Verify the daemon is running: you should see `RemoteDaemon listening on ws://127.0.0.1:9100/ws`
 - If using SSH tunnels, check that SSH key auth works: `ssh deploy@remote-host echo ok`
+- If not using SSH key auth, copy the public key to the remote host: `ssh-copy-id -i ~/.ssh/id_rsa.pub deploy@remote-host`
 - If using direct URLs, verify the daemon was started with `--host 0.0.0.0` and the firewall allows port 9100
 - Verify the remote config in `config.yaml` matches the daemon's bind address and port
 
