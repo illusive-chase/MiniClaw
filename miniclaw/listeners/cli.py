@@ -164,8 +164,14 @@ class CLIListener(Listener):
             ))
 
         elif cmd == "reset":
+            # Persist current session before clearing (auto session-dump)
+            try:
+                runtime.persist_session(session.id)
+            except Exception:
+                pass  # best-effort; empty history is a no-op anyway
             count = session.clear_history()
-            console.print(f"[dim]Cleared {count} messages.[/dim]")
+            await session.agent.reset()
+            console.print(f"[dim]Cleared {count} messages (session dumped).[/dim]")
 
         elif cmd == "sessions":
             sessions = runtime.list_persisted_sessions()
