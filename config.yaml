@@ -30,6 +30,12 @@ remotes:
     ssh_port: 22
     daemon_port: 6789
     local_port: 0 # auto-assigned
+  wz20:
+    ssh_host: "222.29.51.20"
+    ssh_user: "yekai"
+    ssh_port: 22
+    daemon_port: 9100
+    local_port: 0 # auto-assigned
 
 logging:
   file_level: "debug"
