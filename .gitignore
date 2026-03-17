@@ -3,3 +3,4 @@ __pycache__/
 .workspace/
 *.egg-info/
 .claude/
+.DS_Store
