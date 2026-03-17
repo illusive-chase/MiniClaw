@@ -219,13 +219,13 @@ class CLIChannel(Channel):
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    content = Group(Markdown(buffer), spinner) if buffer else spinner
+                    content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer), spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer + "\n\n"), spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):

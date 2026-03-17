@@ -18,8 +18,9 @@ from rich.panel import Panel
 
 from miniclaw.agent.config import AgentConfig
 from miniclaw.channels.cli import CLIChannel
-from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
+from miniclaw.interactions import InteractionRequest, InteractionType
 from miniclaw.listeners.base import Listener
+from miniclaw.listeners.completer import SlashCommandCompleter
 from miniclaw.log import _console
 
 if TYPE_CHECKING:
@@ -81,8 +82,12 @@ class CLIListener(Listener):
         # Setup prompt
         history_path = Path(self._workspace_dir) / ".cli_history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
+        completer = SlashCommandCompleter(runtime, session)
+        self._completer = completer
         prompt_session: PromptSession = PromptSession(
             history=FileHistory(str(history_path)),
+            completer=completer,
+            complete_while_typing=False,
         )
 
         # Install SIGINT handler
@@ -210,6 +215,8 @@ class CLIListener(Listener):
                 new_session = await runtime.restore_session(args)
                 new_session.bind_primary(channel)
                 self._session = new_session
+                if self._completer is not None:
+                    self._completer.session = new_session
                 # Note: the REPL loop still holds the old `session` variable.
                 # We update self._session for SIGINT, but commands go through
                 # the local var. This is a known limitation.
@@ -226,6 +233,8 @@ class CLIListener(Listener):
                 forked = await runtime.fork_session(args)
                 forked.bind_primary(channel)
                 self._session = forked
+                if self._completer is not None:
+                    self._completer.session = forked
                 await channel.replay(forked.history)
                 console.print(f"[dim]Forked to session {forked.id}[/dim]")
             except Exception as e:
