@@ -24,6 +24,12 @@ remotes:
     ssh_port: 14465
     daemon_port: 9100
     local_port: 0 # auto-assigned
+  vcl:
+    ssh_host: "162.105.92.9"
+    ssh_user: "vcl"
+    ssh_port: 22
+    daemon_port: 6789
+    local_port: 0 # auto-assigned
 
 logging:
   file_level: "debug"
