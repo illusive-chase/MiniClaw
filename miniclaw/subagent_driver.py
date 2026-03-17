@@ -8,6 +8,7 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from miniclaw.cancellation import Signal, SignalType
 from miniclaw.channels.base import Channel
 from miniclaw.interactions import (
     InteractionRequest,
@@ -47,6 +48,7 @@ class SubAgentDriver(Channel):
         self._result: str | None = None
         self._pending_interactions: dict[str, InteractionRequest] = {}
         self._task: asyncio.Task | None = None
+        self._done = asyncio.Event()
 
     # --- Channel interface (consumed by child session) ---
 
@@ -153,7 +155,12 @@ class SubAgentDriver(Channel):
         text: str,
         extra: dict | None = None,
     ) -> None:
-        """Inject a sub-agent notification into the parent session's queue."""
+        """Inject a sub-agent notification into the parent session.
+
+        If the parent is mid-turn (has a current token), route via the
+        signal queue so the agent sees it immediately.  Otherwise fall
+        back to the session input queue (dequeued on the next turn).
+        """
         metadata = {
             "event_type": event_type,
             "session_id": self._session_id,
@@ -170,11 +177,20 @@ class SubAgentDriver(Channel):
             self._parent_session._input_queue.qsize(),
         )
 
-        self._parent_session.submit(
-            text=text,
-            source="sub_agent",
-            metadata=metadata,
-        )
+        token = self._parent_session._current_token
+        if token is not None:
+            token.send(Signal(
+                type=SignalType.NOTIFICATION,
+                payload=text,
+                source="sub_agent",
+                metadata=metadata,
+            ))
+        else:
+            self._parent_session.submit(
+                text=text,
+                source="sub_agent",
+                metadata=metadata,
+            )
 
     # --- Lifecycle ---
 
@@ -186,34 +202,37 @@ class SubAgentDriver(Channel):
     async def _run(self) -> None:
         """Main loop: consume child session.run() and pipe through send_stream."""
         try:
-            async for stream, source in self._child_session.run():
-                await self.send_stream(stream)
-                # Notify parent that this turn is done (subagent waiting for next input)
-                if self._result:
-                    logger.debug(
-                        "[SUBAGENT %s] turn_complete: result_len=%d",
-                        self._session_id, len(self._result),
-                    )
-                    self._notify_parent(
-                        "turn_complete",
-                        self._result,
-                        extra={"session_id": self._session_id},
-                    )
+            try:
+                async for stream, source in self._child_session.run():
+                    await self.send_stream(stream)
+                    # Notify parent that this turn is done (subagent waiting for next input)
+                    if self._result:
+                        logger.debug(
+                            "[SUBAGENT %s] turn_complete: result_len=%d",
+                            self._session_id, len(self._result),
+                        )
+                        self._notify_parent(
+                            "turn_complete",
+                            self._result,
+                            extra={"session_id": self._session_id},
+                        )
 
-            # Clean exit — track status internally only
-            if self._status == "running":
-                self._status = "completed"
-                logger.info("[SUBAGENT %s] clean exit: completed", self._session_id)
-        except asyncio.CancelledError:
-            if self._status == "running":
-                self._status = "interrupted"
-        except Exception as e:
-            self._status = "failed"
-            logger.error("SubAgentDriver %s failed: %s", self._session_id, e)
-            self._notify_parent(
-                "failed",
-                f"Sub-agent {self._session_id} failed: {e}",
-            )
+                # Clean exit — track status internally only
+                if self._status == "running":
+                    self._status = "completed"
+                    logger.info("[SUBAGENT %s] clean exit: completed", self._session_id)
+            except asyncio.CancelledError:
+                if self._status == "running":
+                    self._status = "interrupted"
+            except Exception as e:
+                self._status = "failed"
+                logger.error("SubAgentDriver %s failed: %s", self._session_id, e)
+                self._notify_parent(
+                    "failed",
+                    f"Sub-agent {self._session_id} failed: {e}",
+                )
+        finally:
+            self._done.set()
 
     # --- State queries ---
 

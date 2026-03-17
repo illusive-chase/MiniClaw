@@ -9,7 +9,7 @@
 | 3 | **Listener/Channel split** | Listener = input routing. Channel = output rendering. Separate concerns. |
 | 4 | **SubAgentDriver-as-Channel** | Background sub-agent communication uses the same Channel abstraction. SubAgentDriver acts as Channel for the child and notifier for the parent. |
 | 5 | **Typed event stream** | All agent output flows through `AgentEvent` union. Session intercepts internal events, forwards the rest. |
-| 6 | **Cooperative interrupts** | CancellationToken passed from Session to Agent. Agent checks at defined checkpoints. |
+| 6 | **Cooperative interrupts + signals** | SignalToken (extends CancellationToken) passed from Session to Agent. Agents check at defined checkpoints. Sub-agent notifications are delivered mid-turn via the signal queue. |
 | 7 | **Extensible via protocol** | New agents, channels, listeners implement protocols and register with Runtime. |
 | 8 | **Input queue model** | Session accepts messages via `submit()` queue, consumed by `run()`. Enables multi-source input (user + sub-agent notifications). |
 
@@ -77,7 +77,7 @@ Session
 ├── runtime_context: RuntimeContext | None     # bridge to Runtime for sub-agents
 │
 ├── _lock: asyncio.Lock                # one message at a time
-├── _current_token: CancellationToken | None
+├── _current_token: SignalToken | None  # cancellation + signal queue
 └── status: str                        # "active" | "paused" | "archived"
 ```
 
@@ -183,10 +183,18 @@ async def _process(self, text: str) -> AsyncIterator[AgentEvent]:
         yield event
 
     finally:
+        # Flush any undelivered signals to the input queue
+        if self._current_token is not None:
+            remaining = self._current_token.drain()
+            for sig in remaining:
+                self.submit(text=sig.payload, source=sig.source or "sub_agent",
+                            metadata=sig.metadata)
         self._current_token = None
 ```
 
 The backward-compat `process()` wrapper delegates to `_process()` directly (bypasses queue).
+
+The signal flush ensures that any sub-agent notifications that arrived during the turn but were not consumed by the agent (e.g., because the turn ended before the next checkpoint) are re-queued to the input queue for processing on the next turn.
 
 ### 3.5 Sub-Agent Message Formatting
 
@@ -365,12 +373,35 @@ class AgentConfig:
     effort: str = "medium"                  # "low" / "medium" / "high"
     temperature: float = 0.7
     extra: dict = field(default_factory=dict)  # agent-type-specific overrides
+
+    # Sub-agent spawn limits (None = unlimited)
+    max_concurrent_agents: int | None = None   # hard block at N running
+    max_total_spawns: int | None = None        # hard limit on total spawns per session
+    spawn_warn_threshold: int | None = None    # soft warning threshold
 ```
 
-### 4.4 CancellationToken
+### 4.4 SignalToken (CancellationToken)
 
 ```python
-class CancellationToken:
+class SignalType(Enum):
+    CANCEL = "cancel"
+    NOTIFICATION = "notification"
+    INJECT = "inject"          # future: user "btw" mid-turn
+
+@dataclass
+class Signal:
+    type: SignalType
+    payload: str = ""
+    source: str = ""           # "user" | "sub_agent" | "system"
+    metadata: dict | None = None
+
+class SignalToken:
+    """Cooperative cancellation + signal queue passed from Session to Agent.
+
+    Extends the original CancellationToken with a deque-based signal queue
+    so sub-agent notifications can be delivered mid-turn.
+    """
+
     def cancel(self) -> None:
         """Signal cancellation."""
 
@@ -385,7 +416,25 @@ class CancellationToken:
           2. Before each tool.execute() call
           3. (Optional) Between stream chunks
         """
+
+    def send(self, signal: Signal) -> None:
+        """Enqueue a signal for the agent to pick up at the next checkpoint."""
+
+    def drain(self, types: set[SignalType] | None = None) -> list[Signal]:
+        """Remove and return queued signals, optionally filtered by type."""
+
+    @property
+    def has_pending(self) -> bool: ...
+
+CancellationToken = SignalToken  # backward-compat alias
 ```
+
+**Signal delivery flow:**
+1. Sub-agent completes a turn → driver calls `_notify_parent()`
+2. If parent is mid-turn (`_current_token is not None`): enqueue via `token.send(Signal(...))`
+3. If parent is idle: fall back to `parent.submit()` (dequeued on next turn)
+4. Agent drains signals at each checkpoint and injects them as user-role messages
+5. On turn end, `Session._process()` flushes remaining signals back to the input queue
 
 ### 4.5 Supporting Data Types
 
@@ -430,6 +479,7 @@ NativeAgent.process(text, history, config, token):
 │
 ├─ TOOL LOOP (max config.max_iterations):
 │   ├─ token.check()                          ← checkpoint 1
+│   ├─ _drain_and_inject_signals(token, msgs) ← inject sub-agent notifications
 │   ├─ provider.chat_stream(messages, specs, config.model, config.temperature)
 │   │   ├─ str chunks → yield TextDelta (with block-separation logic)
 │   │   └─ ChatResponse → response
@@ -687,6 +737,7 @@ SubAgentDriver(session_id, parent_session, child_session)
 ├── _status: str                      # running | completed | failed | interrupted
 ├── _result: str | None               # final text output
 ├── _task: asyncio.Task | None
+├── _done: asyncio.Event              # set when _run() exits (for wait_agent)
 │
 ├── send_stream(stream):              # Channel interface
 │   ├─ Collect TextDelta chunks → buffer
@@ -711,17 +762,22 @@ SubAgentDriver(session_id, parent_session, child_session)
 │   └─ request.resolve(response) → unblocks child agent
 │
 ├── _notify_parent(event_type, text, extra):
-│   └─ parent.submit(text, source="sub_agent", metadata={event_type, ...})
+│   ├─ If parent._current_token is not None (parent mid-turn):
+│   │   └─ token.send(Signal(NOTIFICATION, text, "sub_agent", metadata))
+│   └─ Else (parent idle):
+│       └─ parent.submit(text, source="sub_agent", metadata={event_type, ...})
 │
 ├── start():
 │   └─ asyncio.create_task(_run())
 │
 ├── _run():                           # background loop
-│   ├─ async for stream, source in child_session.run():
-│   │   ├─ await self.send_stream(stream)
-│   │   └─ if result: _notify_parent("turn_complete", result)
-│   └─ On clean exit: set status=completed
-│   └─ On error: set status=failed, notify parent("failed")
+│   ├─ try:
+│   │   ├─ async for stream, source in child_session.run():
+│   │   │   ├─ await self.send_stream(stream)
+│   │   │   └─ if result: _notify_parent("turn_complete", result)
+│   │   └─ On clean exit: set status=completed
+│   │   └─ On error: set status=failed, notify parent("failed")
+│   └─ finally: self._done.set()
 │
 ├── status → str (property)
 ├── result → str | None (property)
@@ -730,9 +786,11 @@ SubAgentDriver(session_id, parent_session, child_session)
 
 **Key behaviors:**
 - All InteractionRequests are forwarded to the parent session via `_notify_parent("permission_required", ...)`
+- **Dual delivery:** If the parent is mid-turn, notifications go to the `SignalToken` signal queue (immediate). If idle, they go to the session input queue (next turn).
 - Parent agent sees the notification as a formatted text message (§3.5), calls `reply_agent` tool
 - `resolve_interaction()` resolves the InteractionRequest's `_future`, unblocking the child agent's `can_use_tool` callback
 - On each turn completion, notifies parent with `"turn_complete"` and the result text
+- `_done` event is set when `_run()` exits, used by `wait_agent` tool to block until completion
 
 ---
 
@@ -1057,9 +1115,17 @@ class RuntimeContext:
         self._runtime = runtime
         self._parent = parent_session
         self._drivers: dict[str, SubAgentDriver] = {}
+        self._total_spawns: int = 0
 
-    async def spawn(self, agent_type, task) -> str:
-        """Create child session → SubAgentDriver → submit task → start loop → return session_id."""
+    async def spawn(self, agent_type, task, remote=None, cwd=None) -> tuple[str, str]:
+        """Create child session → SubAgentDriver → submit task → start loop.
+
+        Returns (session_id, warning_text).
+        Raises SpawnLimitError if limits are exceeded:
+          - max_concurrent_agents: blocks if too many running
+          - max_total_spawns: blocks if lifetime spawn count exceeded
+        Emits soft warning if spawn_warn_threshold is crossed.
+        """
 
     def resolve(self, session_id, interaction_id, action, reason=None, answers=None) -> str:
         """Find driver → resolve_interaction() → unblocks child agent.
@@ -1075,6 +1141,9 @@ class RuntimeContext:
 
     def cancel(self, session_id) -> str:
         """Interrupt child session via CancellationToken."""
+
+class SpawnLimitError(Exception):
+    """Raised when a sub-agent spawn exceeds configured limits."""
 ```
 
 ---
@@ -1117,6 +1186,7 @@ CancellationToken is cooperative. Checkpoints in the agent:
 | Checkpoint | Location | What it prevents |
 |------------|----------|--------------------|
 | Before provider.chat() | Start of each tool loop iteration | Unnecessary LLM call |
+| Signal drain | After cancel check, before LLM call | Delayed sub-agent notifications |
 | Before tool.execute() | Before each tool execution | Unnecessary tool work |
 | Between stream chunks | During streaming (optional) | Long stream responses |
 
@@ -1130,12 +1200,15 @@ CancellationToken is cooperative. Checkpoints in the agent:
 Parent agent calls launch_agent tool:
   → LaunchAgentTool.execute(type="ccagent", task="...")
   → RuntimeContext.spawn():
+      0. Check spawn limits (max_concurrent_agents, max_total_spawns)
+         → SpawnLimitError if exceeded → tool returns error to LLM
       1. runtime.create_session("ccagent", AgentConfig()) → child_session
       2. SubAgentDriver(session_id, parent, child_session)
       3. child_session.bind_primary(driver)
       4. child_session.submit(task, "user")
       5. driver.start() → asyncio.create_task(driver._run())
-      6. return child_session.id
+      6. self._total_spawns += 1
+      7. return (child_session.id, warning)
 ```
 
 ### 10.2 Permission Flow
@@ -1420,21 +1493,58 @@ Register manually in `create_registry()` when `runtime_context` is provided.
 
 ## 14. Session Management Tools
 
-Five tools provide the agent with sub-agent management capabilities. They are registered in the tool registry only when a `RuntimeContext` is available (i.e., when the agent is created through the standard Runtime flow).
+Seven tools provide the agent with sub-agent management capabilities. They are registered in the tool registry only when a `RuntimeContext` is available (i.e., when the agent is created through the standard Runtime flow).
 
 ### 14.1 Tool Reference
 
 | Tool | Name | Key Parameters | RuntimeContext Method |
 |------|------|---------------|----------------------|
-| `LaunchAgentTool` | `launch_agent` | type, task | `ctx.spawn()` |
+| `LaunchAgentTool` | `launch_agent` | type, task, remote, cwd | `ctx.spawn()` |
 | `ReplyAgentTool` | `reply_agent` | session_id, interaction_id, action, reason, answers | `ctx.resolve()` |
 | `MessageAgentTool` | `message_agent` | session_id, text | `ctx.send()` |
 | `CheckAgentsTool` | `check_agents` | (none) | `ctx.list_agents()` |
 | `CancelAgentTool` | `cancel_agent` | session_id | `ctx.cancel()` |
+| `WaitAgentTool` | `wait_agent` | session_ids (optional), timeout | Polls `driver.status` |
 
-**Note:** `CheckAgentsTool` is defined in `session_tools.py` but is currently not registered in `create_registry()`. It exists as dead code — only 4 tools (`launch_agent`, `reply_agent`, `message_agent`, `cancel_agent`) are wired up.
+**Tool descriptions** are comprehensive about async semantics to prevent redundant spawning:
+- `launch_agent`: Explains that results arrive asynchronously; instructs the LLM to use `wait_agent` or end the turn rather than re-launching.
+- `check_agents`: Instructs the LLM to check status BEFORE launching new agents.
+- `wait_agent`: Documents the `launch_agent → wait_agent → use results` pattern.
+- `message_agent`: Warns against messaging running agents.
+- `cancel_agent`: Advises against cancelling agents just because they haven't responded yet.
 
-### 14.2 Example Flow: Delegated Task
+### 14.2 wait_agent Tool
+
+`WaitAgentTool` is a blocking tool that lets the agent synchronously wait for sub-agents to finish:
+
+```python
+class WaitAgentTool(Tool):
+    async def execute(self, args):
+        session_ids = args.get("session_ids")   # specific agents, or None = all running
+        timeout = args.get("timeout", 300)
+
+        # Collect target drivers (specific or all running)
+        # Poll every 2s until all done, timeout, or parent cancelled
+        # Return combined results with status per agent
+```
+
+**Pattern:** `launch_agent → wait_agent → use results in response`
+
+This directly addresses the root cause of redundant spawning: the agent now has a mechanism to block until results are available instead of spawning new agents for the same task.
+
+### 14.3 Spawn Guards
+
+`RuntimeContext.spawn()` enforces configurable limits from `AgentConfig`:
+
+| Config Field | Type | Behavior |
+|-------------|------|----------|
+| `max_concurrent_agents` | `int \| None` | Hard block if N agents are currently `running` |
+| `max_total_spawns` | `int \| None` | Hard block if lifetime spawn count reached |
+| `spawn_warn_threshold` | `int \| None` | Soft warning appended to tool output |
+
+When a limit is exceeded, `SpawnLimitError` is raised and `LaunchAgentTool` returns a descriptive error to the LLM so it can adjust its strategy.
+
+### 14.4 Example Flow: Delegated Task
 
 ```
 1. User: "Refactor the auth module and update tests"
@@ -1446,43 +1556,41 @@ Five tools provide the agent with sub-agent management capabilities. They are re
    }
    → Returns session_id "20260316_120000_abc123"
 
-3. Background CCAgent hits a tool that needs permission:
-   → Agent receives formatted notification text:
-     "[Sub-agent notification] session_id=20260316_120000_abc123
-      Permission required — interaction_id=interaction_456, tool=Bash
-      tool_input: {...}
-      Use reply_agent to allow/deny."
-   → Agent calls reply_agent:
-     {
-       "session_id": "20260316_120000_abc123",
-       "interaction_id": "interaction_456",
-       "action": "allow"
-     }
+3. Agent calls wait_agent to block until completion:
+   {
+     "session_ids": ["20260316_120000_abc123"]
+   }
+   → Blocks until sub-agent finishes (or timeout)
+   → Returns combined results with status
 
-4. Background CCAgent completes a turn:
-   → Agent receives turn_complete notification with result text
+4. If sub-agent hits a permission request mid-wait:
+   → Signal delivered to parent via SignalToken
+   → NativeAgent sees it at next checkpoint, calls reply_agent
+   → Sub-agent unblocked, continues
 
 5. Agent reports to user: "Auth module refactored. Here's what changed..."
 ```
 
-### 14.3 Registry Wiring
+### 14.5 Registry Wiring
 
 Session tools use `_manual_registration = True` to prevent auto-discovery (they require `RuntimeContext` in `__init__`). They are explicitly instantiated in `create_registry()` when `runtime_context` is not None:
 
 ```python
-def create_registry(config, memory=None, runtime_context=None):
+def create_registry(config, runtime_context=None):
     registry = ToolRegistry()
     # ... auto-discover standard tools ...
 
     if runtime_context is not None:
         from miniclaw.tools.session_tools import (
             CancelAgentTool,
+            CheckAgentsTool,
             LaunchAgentTool,
             MessageAgentTool,
             ReplyAgentTool,
+            WaitAgentTool,
         )
-        for cls in (LaunchAgentTool, ReplyAgentTool,
-                    MessageAgentTool, CancelAgentTool):
+        for cls in (LaunchAgentTool, ReplyAgentTool, MessageAgentTool,
+                    CancelAgentTool, CheckAgentsTool, WaitAgentTool):
             tool = cls(runtime_context=runtime_context)
             registry.register(tool)
 

@@ -21,3 +21,8 @@ class AgentConfig:
     effort: str = "medium"  # "low" / "medium" / "high"
     temperature: float = 0.7
     extra: dict = field(default_factory=dict)  # agent-type-specific overrides
+
+    # Sub-agent spawn limits (None = unlimited)
+    max_concurrent_agents: int | None = None
+    max_total_spawns: int | None = None
+    spawn_warn_threshold: int | None = None

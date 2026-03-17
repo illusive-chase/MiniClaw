@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class SpawnLimitError(Exception):
+    """Raised when a sub-agent spawn exceeds configured limits."""
+
+
 class RuntimeContext:
     """Bridge passed to tools, enabling them to spawn and manage sub-agent sessions.
 
@@ -27,6 +31,7 @@ class RuntimeContext:
         self._runtime = runtime
         self._parent = parent_session
         self._drivers: dict[str, Any] = {}  # session_id -> SubAgentDriver
+        self._total_spawns: int = 0
 
     async def spawn(
         self,
@@ -34,7 +39,7 @@ class RuntimeContext:
         task: str,
         remote: str | None = None,
         cwd: str | None = None,
-    ) -> str:
+    ) -> tuple[str, str]:
         """Spawn a background sub-agent session.
 
         Args:
@@ -44,10 +49,29 @@ class RuntimeContext:
                 ``config.remotes`` (e.g. "server1") or a raw ``ws://`` URL.
                 If provided, spawns on a RemoteDaemon via WebSocket.
 
-        Returns the new session's ID.
+        Returns a tuple of (session_id, warning_text).
+        Raises SpawnLimitError if limits are exceeded.
         """
+        # Enforce spawn limits
+        config = self._parent.agent_config
+        running = sum(1 for d in self._drivers.values() if d.status == "running")
+
+        if config.max_concurrent_agents is not None and running >= config.max_concurrent_agents:
+            raise SpawnLimitError(
+                f"Cannot spawn: {running} agents already running "
+                f"(max_concurrent_agents={config.max_concurrent_agents}). "
+                f"Use wait_agent first."
+            )
+        if config.max_total_spawns is not None and self._total_spawns >= config.max_total_spawns:
+            raise SpawnLimitError(
+                f"Cannot spawn: {self._total_spawns} total spawns reached "
+                f"(max_total_spawns={config.max_total_spawns})."
+            )
         if remote:
-            return await self._spawn_remote(agent_type, task, remote, cwd)
+            session_id = await self._spawn_remote(agent_type, task, remote, cwd)
+            self._total_spawns += 1
+            warning = self._spawn_warning(running + 1, config)
+            return session_id, warning
 
         from miniclaw.agent.config import AgentConfig
         from miniclaw.subagent_driver import SubAgentDriver
@@ -89,7 +113,9 @@ class RuntimeContext:
             agent_type,
             self._parent.id,
         )
-        return child_session.id
+        self._total_spawns += 1
+        warning = self._spawn_warning(running + 1, config)
+        return child_session.id, warning
 
     async def _spawn_remote(
         self,
@@ -271,3 +297,16 @@ class RuntimeContext:
                     driver._child_session.interrupt()
             except Exception as e:
                 logger.error("Error closing sub-agent driver: %s", e)
+
+    @staticmethod
+    def _spawn_warning(current_running: int, config) -> str:
+        """Return a soft warning string if the threshold is crossed, else empty."""
+        if (
+            config.spawn_warn_threshold is not None
+            and current_running >= config.spawn_warn_threshold
+        ):
+            return (
+                f"\nWarning: {current_running} concurrent agents running "
+                f"(warn threshold={config.spawn_warn_threshold})."
+            )
+        return ""

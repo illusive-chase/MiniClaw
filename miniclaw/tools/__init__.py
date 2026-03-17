@@ -93,6 +93,7 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
             LaunchAgentTool,
             MessageAgentTool,
             ReplyAgentTool,
+            WaitAgentTool,
         )
 
         for cls in (
@@ -100,6 +101,7 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
             ReplyAgentTool,
             MessageAgentTool,
             CancelAgentTool,
+            WaitAgentTool,
         ):
             tool = cls(runtime_context=runtime_context)
             if tool.name() not in deny_set:

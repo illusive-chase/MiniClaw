@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from miniclaw.cancellation import Signal, SignalType
 from miniclaw.channels.base import Channel
 from miniclaw.interactions import (
     InteractionRequest,
@@ -80,6 +81,7 @@ class RemoteSubAgentDriver(Channel):
         self._task_handle: asyncio.Task | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._aio_session: aiohttp.ClientSession | None = None
+        self._done = asyncio.Event()
 
     # --- Channel interface (not used directly — events come over WS) ---
 
@@ -103,67 +105,70 @@ class RemoteSubAgentDriver(Channel):
         retries = 0
         backoff = _RECONNECT_BASE
 
-        while retries <= _RECONNECT_RETRIES and self._status == "running":
-            try:
-                self._aio_session = aiohttp.ClientSession()
+        try:
+            while retries <= _RECONNECT_RETRIES and self._status == "running":
                 try:
-                    self._ws = await self._aio_session.ws_connect(self._ws_url)
-                    logger.info(
-                        "[REMOTE %s] Connected to %s", self._session_id, self._ws_url,
-                    )
-
-                    # Send spawn
-                    spawn_msg = serialize_spawn(
-                        self._session_id, self._agent_type, self._task, self._agent_config,
-                        cwd=self._cwd,
-                    )
-                    await self._ws.send_json(spawn_msg)
-
-                    # Wait for spawn_ack
-                    ack = await self._ws.receive_json()
-                    if not ack.get("ok"):
-                        error = ack.get("error", "unknown error")
-                        logger.error(
-                            "[REMOTE %s] Spawn rejected: %s", self._session_id, error,
+                    self._aio_session = aiohttp.ClientSession()
+                    try:
+                        self._ws = await self._aio_session.ws_connect(self._ws_url)
+                        logger.info(
+                            "[REMOTE %s] Connected to %s", self._session_id, self._ws_url,
                         )
-                        self._status = "failed"
-                        self._notify_parent("failed", f"Remote spawn failed: {error}")
-                        return
 
-                    # Reset backoff on successful connect
-                    retries = 0
-                    backoff = _RECONNECT_BASE
+                        # Send spawn
+                        spawn_msg = serialize_spawn(
+                            self._session_id, self._agent_type, self._task, self._agent_config,
+                            cwd=self._cwd,
+                        )
+                        await self._ws.send_json(spawn_msg)
 
-                    # Receive loop
-                    await self._receive_loop()
+                        # Wait for spawn_ack
+                        ack = await self._ws.receive_json()
+                        if not ack.get("ok"):
+                            error = ack.get("error", "unknown error")
+                            logger.error(
+                                "[REMOTE %s] Spawn rejected: %s", self._session_id, error,
+                            )
+                            self._status = "failed"
+                            self._notify_parent("failed", f"Remote spawn failed: {error}")
+                            return
 
-                finally:
-                    if self._ws and not self._ws.closed:
-                        await self._ws.close()
-                    await self._aio_session.close()
-                    self._ws = None
-                    self._aio_session = None
+                        # Reset backoff on successful connect
+                        retries = 0
+                        backoff = _RECONNECT_BASE
 
-            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
-                logger.warning(
-                    "[REMOTE %s] Connection failed (retry %d/%d): %s",
-                    self._session_id, retries, _RECONNECT_RETRIES, e,
-                )
-                retries += 1
-                if retries > _RECONNECT_RETRIES:
-                    self._status = "failed"
-                    self._deny_all_pending("Connection lost")
-                    self._notify_parent(
-                        "failed",
-                        f"Remote agent {self._session_id} connection lost after {_RECONNECT_RETRIES} retries",
+                        # Receive loop
+                        await self._receive_loop()
+
+                    finally:
+                        if self._ws and not self._ws.closed:
+                            await self._ws.close()
+                        await self._aio_session.close()
+                        self._ws = None
+                        self._aio_session = None
+
+                except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+                    logger.warning(
+                        "[REMOTE %s] Connection failed (retry %d/%d): %s",
+                        self._session_id, retries, _RECONNECT_RETRIES, e,
                     )
-                    return
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _RECONNECT_MAX)
+                    retries += 1
+                    if retries > _RECONNECT_RETRIES:
+                        self._status = "failed"
+                        self._deny_all_pending("Connection lost")
+                        self._notify_parent(
+                            "failed",
+                            f"Remote agent {self._session_id} connection lost after {_RECONNECT_RETRIES} retries",
+                        )
+                        return
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _RECONNECT_MAX)
 
-            except asyncio.CancelledError:
-                self._status = "interrupted"
-                return
+                except asyncio.CancelledError:
+                    self._status = "interrupted"
+                    return
+        finally:
+            self._done.set()
 
     async def _receive_loop(self) -> None:
         """Process incoming WS messages until connection drops or session ends."""
@@ -364,7 +369,12 @@ class RemoteSubAgentDriver(Channel):
         text: str,
         extra: dict | None = None,
     ) -> None:
-        """Inject a sub-agent notification into the parent session's queue."""
+        """Inject a sub-agent notification into the parent session.
+
+        If the parent is mid-turn (has a current token), route via the
+        signal queue so the agent sees it immediately.  Otherwise fall
+        back to the session input queue (dequeued on the next turn).
+        """
         metadata = {
             "event_type": event_type,
             "session_id": self._session_id,
@@ -373,11 +383,20 @@ class RemoteSubAgentDriver(Channel):
         if extra:
             metadata.update(extra)
 
-        self._parent_session.submit(
-            text=text,
-            source="sub_agent",
-            metadata=metadata,
-        )
+        token = self._parent_session._current_token
+        if token is not None:
+            token.send(Signal(
+                type=SignalType.NOTIFICATION,
+                payload=text,
+                source="sub_agent",
+                metadata=metadata,
+            ))
+        else:
+            self._parent_session.submit(
+                text=text,
+                source="sub_agent",
+                metadata=metadata,
+            )
 
     # --- State queries ---
 

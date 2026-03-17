@@ -279,6 +279,14 @@ class Session:
             yield event
 
         finally:
+            if self._current_token is not None:
+                remaining = self._current_token.drain()
+                for sig in remaining:
+                    self.submit(
+                        text=sig.payload,
+                        source=sig.source or "sub_agent",
+                        metadata=sig.metadata,
+                    )
             self._current_token = None
 
     # --- Sub-agent message formatting ---

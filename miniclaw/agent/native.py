@@ -11,8 +11,12 @@ from uuid import uuid4
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.agent.config import AgentConfig
-from miniclaw.cancellation import CancellationToken
-from miniclaw.interactions import InteractionRequest, InteractionResponse, InteractionType
+from miniclaw.cancellation import CancellationToken, SignalType
+from miniclaw.interactions import (
+    InteractionRequest,
+    InteractionResponse,
+    InteractionType,
+)
 from miniclaw.log import truncate
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
@@ -173,6 +177,7 @@ class NativeAgent:
         # Tool loop
         for iteration in range(max_iterations):
             token.check()  # checkpoint 1: before LLM call
+            self._drain_and_inject_signals(token, messages)  # inject sub-agent signals
 
             logger.debug(
                 "[NATIVE iter=%d] Starting LLM call, messages=%d",
@@ -357,6 +362,25 @@ class NativeAgent:
         return {}
 
     # --- Internal ---
+
+    @staticmethod
+    def _drain_and_inject_signals(
+        token: CancellationToken,
+        messages: list[ChatMessage],
+    ) -> bool:
+        """Drain pending notification/inject signals and append as user messages."""
+        signals = token.drain({SignalType.NOTIFICATION, SignalType.INJECT})
+        if not signals:
+            return False
+        from miniclaw.session import Session  # local import avoids circular
+
+        for sig in signals:
+            if sig.source == "sub_agent" and sig.metadata:
+                text = Session._format_sub_agent_message(sig.metadata)
+            else:
+                text = sig.payload
+            messages.append(ChatMessage(role="user", content=text))
+        return True
 
     async def _execute_tool(self, name: str, arguments: dict) -> str:
         """Execute a single tool call."""

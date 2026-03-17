@@ -1,10 +1,12 @@
-"""Session management tools — launch, reply, message, check, cancel sub-agents."""
+"""Session management tools — launch, reply, message, check, cancel, wait sub-agents."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
+from miniclaw.runtime_context import SpawnLimitError
 from miniclaw.tools.base import Tool, ToolResult
 
 if TYPE_CHECKING:
@@ -26,10 +28,13 @@ class LaunchAgentTool(Tool):
 
     def description(self) -> str:
         return (
-            "Launch a background sub-agent session. The sub-agent runs autonomously "
-            "and you will be notified automatically when it completes a turn or needs "
-            "permission for a tool. Before receiving requests, you can continue to chat "
-            "with users or just close this turn."
+            "Launch a background sub-agent session that runs autonomously.\n\n"
+            "IMPORTANT — async behavior:\n"
+            "- This tool returns immediately with a session ID. The sub-agent runs in the background.\n"
+            "- You will receive a notification automatically when the sub-agent completes or needs permission.\n"
+            "- Do NOT re-launch agents for the same task. If you haven't received results yet, either:\n"
+            "  (a) Use wait_agent to block until completion, or\n"
+            "  (b) End your current turn and wait for the notification.\n"
         )
 
     def parameters_schema(self) -> dict:
@@ -76,22 +81,25 @@ class LaunchAgentTool(Tool):
             return ToolResult(output="Error: 'task' is required.", success=False)
 
         try:
-            session_id = await self._ctx.spawn(
+            session_id, warning = await self._ctx.spawn(
                 agent_type=agent_type,
                 task=task,
                 remote=remote,
                 cwd=cwd,
             )
             location = f" (remote: {remote})" if remote else ""
-            return ToolResult(
-                output=(
-                    f"Sub-agent launched successfully{location}.\n"
-                    f"Session ID: {session_id}\n"
-                    f"Type: {agent_type}\n"
-                    f"Task: {task[:200]}\n"
-                    f"CWD: {cwd or 'default'}\n"
-                )
+            output = (
+                f"Sub-agent launched successfully{location}.\n"
+                f"Session ID: {session_id}\n"
+                f"Type: {agent_type}\n"
+                f"Task: {task[:200]}\n"
+                f"CWD: {cwd or 'default'}\n"
             )
+            if warning:
+                output += warning
+            return ToolResult(output=output)
+        except SpawnLimitError as e:
+            return ToolResult(output=f"Spawn blocked: {e}", success=False)
         except Exception as e:
             return ToolResult(output=f"Failed to launch sub-agent: {e}", success=False)
 
@@ -176,9 +184,10 @@ class MessageAgentTool(Tool):
 
     def description(self) -> str:
         return (
-            "Send a follow-up message to a idle sub-agent. "
-            "Use this to provide additional context or instructions."
-            "Never use this tool when the sub-agent is still running to respond."
+            "Send a follow-up message to an IDLE sub-agent (status: completed or waiting).\n\n"
+            "WARNING: This is for providing additional instructions AFTER a sub-agent has completed a turn.\n"
+            "Do NOT use this to 'nudge' or check on running agents — they will notify you when done.\n"
+            "If the agent is still running, your message will be queued until it finishes."
         )
 
     def parameters_schema(self) -> dict:
@@ -224,8 +233,9 @@ class CheckAgentsTool(Tool):
 
     def description(self) -> str:
         return (
-            "Only used when users request. List all background sub-agents spawned from this session, "
-            "their status and result preview."
+            "List all background sub-agents, their status (running/completed/failed/interrupted), "
+            "and result preview.\n"
+            "Use this BEFORE launching new agents to avoid duplicating work already in progress."
         )
 
     def parameters_schema(self) -> dict:
@@ -266,7 +276,12 @@ class CancelAgentTool(Tool):
         return "cancel_agent"
 
     def description(self) -> str:
-        return "Cancel (interrupt) a running background sub-agent session."
+        return (
+            "Cancel a running sub-agent. Use only when:\n"
+            "- The agent's task is no longer needed\n"
+            "- You want to change approach and re-launch with different instructions\n"
+            "Do NOT cancel agents just because they haven't responded yet — they may still be working."
+        )
 
     def parameters_schema(self) -> dict:
         return {
@@ -290,3 +305,96 @@ class CancelAgentTool(Tool):
 
         result = self._ctx.cancel(session_id)
         return ToolResult(output=result)
+
+
+class WaitAgentTool(Tool):
+    """Wait for sub-agents to complete and return their results."""
+
+    _manual_registration = True
+
+    def __init__(self, runtime_context: RuntimeContext) -> None:
+        self._ctx = runtime_context
+
+    def name(self) -> str:
+        return "wait_agent"
+
+    def description(self) -> str:
+        return (
+            "Wait for background sub-agents to complete and return their results.\n\n"
+            "- If session_ids is provided, waits for those specific agents.\n"
+            "- If session_ids is omitted, waits for ALL currently running agents.\n"
+            "- Returns the combined results of all waited agents.\n"
+            "- Use this after launch_agent when you need the results before continuing.\n\n"
+            "Pattern: launch_agent -> wait_agent -> use results in your response."
+        )
+
+    def parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "session_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional list of sub-agent session IDs to wait for. "
+                        "If omitted, waits for all currently running agents."
+                    ),
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": (
+                        "Maximum seconds to wait (default 300). Returns whatever "
+                        "results are available when the timeout is reached."
+                    ),
+                },
+            },
+        }
+
+    async def execute(self, args: dict) -> ToolResult:
+        session_ids = args.get("session_ids")
+        timeout = args.get("timeout", 300)
+
+        # Collect target drivers
+        if session_ids:
+            drivers = {
+                sid: self._ctx._drivers[sid]
+                for sid in session_ids
+                if sid in self._ctx._drivers
+            }
+            if not drivers:
+                return ToolResult(
+                    output="No matching sub-agent sessions found.",
+                    success=False,
+                )
+        else:
+            drivers = {
+                sid: d
+                for sid, d in self._ctx._drivers.items()
+                if d.status == "running"
+            }
+
+        if not drivers:
+            return ToolResult(output="No running agents to wait for.")
+
+        # Wait for all to complete (with timeout + cancellation check)
+        poll_interval = 2.0
+        elapsed = 0.0
+        while elapsed < timeout:
+            all_done = all(d.status != "running" for d in drivers.values())
+            if all_done:
+                break
+            # Check parent cancellation
+            token = self._ctx._parent._current_token
+            if token and token.is_cancelled:
+                break
+            await asyncio.sleep(min(poll_interval, timeout - elapsed))
+            elapsed += poll_interval
+
+        # Collect results
+        results = []
+        for sid, driver in drivers.items():
+            results.append(
+                f"[{sid}] Status: {driver.status}\n"
+                f"{driver.result or '(no result)'}"
+            )
+        return ToolResult(output="\n\n---\n\n".join(results))
