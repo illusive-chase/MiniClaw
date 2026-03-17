@@ -291,6 +291,9 @@ class CCAgent:
                     self._usage.setdefault(key, UsageStats()).accumulate(message)
                     turn_usage.accumulate(message)
 
+                    # Intermediate usage update — lets the channel show running token count
+                    yield UsageEvent(usage=turn_usage.copy(), final=False)
+
                 else:
                     logger.warning(
                         "[CC] Unknown SDK message type: %s",

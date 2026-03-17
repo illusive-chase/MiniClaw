@@ -46,9 +46,14 @@ class InterruptedEvent:
 
 @dataclass
 class UsageEvent:
-    """Cumulative token usage stats — yielded at the end of each agent response."""
+    """Cumulative token usage stats — yielded during and at the end of each agent response.
+
+    Intermediate events (final=False) update the spinner with running token counts.
+    The final event (final=True) is rendered as the end-of-turn usage summary.
+    """
 
     usage: UsageStats
+    final: bool = True
 
 
 # Union of all event types yielded by agents.

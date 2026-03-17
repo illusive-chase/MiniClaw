@@ -140,14 +140,14 @@ class CLIChannel(Channel):
         live.start()
 
         try:
-            spinner = Spinner("dots", text="Thinking...", style="bold cyan")
+            spinner = Spinner("bouncingBall", text="Thinking...", style="bold cyan")
             live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="blue"), footer))
 
             async for event in stream:
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    content = Group(Markdown(buffer), spinner) if buffer else spinner
+                    content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
@@ -159,15 +159,24 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer), spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer + "\n\n"), spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
-                    u = event.usage
-                    total = u.input_tokens + u.output_tokens
-                    buffer += f"\n\n> tokens: {total:,} ({u.input_tokens:,} in + {u.output_tokens:,} out)"
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
-                    live.update(StreamDisplay(panel, footer))
+                    if event.final:
+                        u = event.usage
+                        total = u.input_tokens + u.output_tokens
+                        buffer += f"\n\n> tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
+                        panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                        live.update(StreamDisplay(panel, footer))
+                    else:
+                        # Intermediate: update spinner text with running token count
+                        u = event.usage
+                        total = u.input_tokens + u.output_tokens
+                        spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
+                        content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                        panel = Panel(content, title="Assistant", border_style="blue")
+                        live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, InterruptedEvent):
                     buffer += "\n\n[interrupted]"
@@ -212,7 +221,7 @@ class CLIChannel(Channel):
                     buffer = ""
                     tracker = ActivityTracker()
                     footer = ActivityFooter()
-                    spinner = Spinner("dots", text="Thinking...", style="bold cyan")
+                    spinner = Spinner("bouncingBall", text="Thinking...", style="bold cyan")
                     live = Live(console=self._console, refresh_per_second=8)
                     live.start()
 
@@ -229,14 +238,24 @@ class CLIChannel(Channel):
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
-                    u = event.usage
-                    total = u.input_tokens + u.output_tokens
-                    buffer += f"\n\n> tokens: {total:,} ({u.input_tokens:,} in + {u.output_tokens:,} out)"
-                    # Turn complete — finalize and stop Live
-                    if live is not None:
-                        live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
-                        live.stop()
-                        live = None
+                    if event.final:
+                        u = event.usage
+                        total = u.input_tokens + u.output_tokens
+                        buffer += f"\n\n> tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
+                        # Turn complete — finalize and stop Live
+                        if live is not None:
+                            live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                            live.stop()
+                            live = None
+                    else:
+                        # Intermediate: update spinner text with running token count
+                        u = event.usage
+                        total = u.input_tokens + u.output_tokens
+                        spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
+                        content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                        panel = Panel(content, title="Assistant", border_style="blue")
+                        if live is not None:
+                            live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, InterruptedEvent):
                     buffer += "\n\n[interrupted]"

@@ -56,3 +56,17 @@ class UsageStats:
             self.output_tokens += usage.output_tokens
             self.cache_read_tokens += usage.cache_read_tokens
             self.cache_creation_tokens += usage.cache_creation_tokens
+
+    def copy(self) -> UsageStats:
+        """Return a frozen snapshot of the current stats."""
+        return UsageStats(
+            input_tokens=self.input_tokens,
+            output_tokens=self.output_tokens,
+            cache_read_tokens=self.cache_read_tokens,
+            cache_creation_tokens=self.cache_creation_tokens,
+            total_cost_usd=self.total_cost_usd,
+            total_duration_ms=self.total_duration_ms,
+            total_api_duration_ms=self.total_api_duration_ms,
+            num_turns=self.num_turns,
+            num_requests=self.num_requests,
+        )

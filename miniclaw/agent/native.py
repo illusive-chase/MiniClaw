@@ -214,6 +214,9 @@ class NativeAgent:
             self._accumulate_usage(response, elapsed_ms)
             turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
 
+            # Intermediate usage update — lets the channel show running token count
+            yield UsageEvent(usage=turn_usage.copy(), final=False)
+
             logger.info(
                 "[NATIVE iter=%d] LLM call done: duration_ms=%d, input_tokens=%d, "
                 "output_tokens=%d",
