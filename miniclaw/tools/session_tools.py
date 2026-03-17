@@ -67,6 +67,14 @@ class LaunchAgentTool(Tool):
                         "runs in this directory instead."
                     ),
                 },
+                "single_turn": {
+                    "type": "boolean",
+                    "description": (
+                        "If true (default), the sub-agent auto-terminates after "
+                        "its first completed turn. Set to false to keep the "
+                        "sub-agent alive for follow-up messages via message_agent."
+                    ),
+                },
             },
             "required": ["type", "task"],
         }
@@ -76,6 +84,7 @@ class LaunchAgentTool(Tool):
         task = args.get("task", "")
         remote = args.get("remote")
         cwd = args.get("cwd")
+        single_turn = args.get("single_turn", True)
 
         if not task:
             return ToolResult(output="Error: 'task' is required.", success=False)
@@ -86,12 +95,15 @@ class LaunchAgentTool(Tool):
                 task=task,
                 remote=remote,
                 cwd=cwd,
+                single_turn=single_turn,
             )
             location = f" (remote: {remote})" if remote else ""
+            mode = "single-turn" if single_turn else "multi-turn"
             output = (
                 f"Sub-agent launched successfully{location}.\n"
                 f"Session ID: {session_id}\n"
                 f"Type: {agent_type}\n"
+                f"Mode: {mode}\n"
                 f"Task: {task[:200]}\n"
                 f"CWD: {cwd or 'default'}\n"
             )
@@ -303,7 +315,7 @@ class CancelAgentTool(Tool):
                 success=False,
             )
 
-        result = self._ctx.cancel(session_id)
+        result = await self._ctx.cancel(session_id)
         return ToolResult(output=result)
 
 

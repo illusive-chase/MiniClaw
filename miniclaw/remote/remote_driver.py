@@ -61,6 +61,7 @@ class RemoteSubAgentDriver(Channel):
         task: str,
         agent_config: dict[str, Any] | None = None,
         cwd: str | None = None,
+        single_turn: bool = True,
     ) -> None:
         self._session_id = session_id
         self._parent_session = parent_session
@@ -69,6 +70,7 @@ class RemoteSubAgentDriver(Channel):
         self._task = task
         self._agent_config = agent_config
         self._cwd = cwd
+        self._single_turn = single_turn
 
         self._status: str = "running"  # running | completed | failed | interrupted
         self._result: str | None = None
@@ -213,6 +215,20 @@ class RemoteSubAgentDriver(Channel):
                 extra={"session_id": self._session_id},
             )
             text_parts.clear()
+            if self._single_turn:
+                self._status = "completed"
+                logger.info(
+                    "[REMOTE %s] single_turn: terminating after first turn",
+                    self._session_id,
+                )
+                if self._ws is not None and not self._ws.closed:
+                    try:
+                        await self._ws.send_json(
+                            serialize_terminate(self._session_id)
+                        )
+                    except Exception:
+                        pass
+                    await self._ws.close()
 
         elif msg_type == "session_error":
             error = msg.get("error", "unknown")

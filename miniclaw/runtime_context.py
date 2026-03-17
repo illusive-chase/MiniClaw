@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -39,6 +40,7 @@ class RuntimeContext:
         task: str,
         remote: str | None = None,
         cwd: str | None = None,
+        single_turn: bool = True,
     ) -> tuple[str, str]:
         """Spawn a background sub-agent session.
 
@@ -48,6 +50,8 @@ class RuntimeContext:
             remote: Optional remote target — either a config key from
                 ``config.remotes`` (e.g. "server1") or a raw ``ws://`` URL.
                 If provided, spawns on a RemoteDaemon via WebSocket.
+            single_turn: If True (default), auto-terminate the sub-agent
+                after its first completed turn.
 
         Returns a tuple of (session_id, warning_text).
         Raises SpawnLimitError if limits are exceeded.
@@ -68,7 +72,7 @@ class RuntimeContext:
                 f"(max_total_spawns={config.max_total_spawns})."
             )
         if remote:
-            session_id = await self._spawn_remote(agent_type, task, remote, cwd)
+            session_id = await self._spawn_remote(agent_type, task, remote, cwd, single_turn)
             self._total_spawns += 1
             warning = self._spawn_warning(running + 1, config)
             return session_id, warning
@@ -95,6 +99,7 @@ class RuntimeContext:
             session_id=child_session.id,
             parent_session=self._parent,
             child_session=child_session,
+            single_turn=single_turn,
         )
         self._drivers[child_session.id] = driver
 
@@ -123,6 +128,7 @@ class RuntimeContext:
         task: str,
         remote: str,
         cwd: str | None = None,
+        single_turn: bool = True,
     ) -> str:
         """Spawn a sub-agent on a remote daemon via WebSocket."""
         from miniclaw.remote.remote_driver import RemoteSubAgentDriver
@@ -144,6 +150,7 @@ class RuntimeContext:
             agent_type=agent_type,
             task=task,
             cwd=cwd,
+            single_turn=single_turn,
         )
         self._drivers[session_id] = driver
         driver.start()
@@ -265,8 +272,12 @@ class RuntimeContext:
         logger.debug("[RUNTIME] list_agents: count=%d", len(results))
         return results
 
-    def cancel(self, session_id: str) -> str:
-        """Cancel (interrupt) a running sub-agent session.
+    async def cancel(self, session_id: str) -> str:
+        """Hard-terminate a running sub-agent session.
+
+        - Remote: sends terminate to daemon and tears down the WS connection.
+        - Local: cancels the driver's asyncio task, which propagates
+          CancelledError through the session and kills the CC process.
 
         Returns a status message.
         """
@@ -280,12 +291,20 @@ class RuntimeContext:
             )
             return f"No sub-agent session found: {session_id}"
 
-        logger.info("[RUNTIME] cancel: session_id=%s", session_id)
+        logger.info("[RUNTIME] cancel (hard-kill): session_id=%s", session_id)
         if isinstance(driver, RemoteSubAgentDriver):
-            driver.cancel()
+            await driver.close()
         else:
-            driver._child_session.interrupt()
-        return f"Sub-agent {session_id} interrupted"
+            # Cancel the asyncio task — CancelledError propagates through
+            # session.run() → agent.process() → SDK finally block kills CC CLI
+            if driver._task is not None and not driver._task.done():
+                driver._task.cancel()
+                try:
+                    await driver._task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            driver._status = "interrupted"
+        return f"Sub-agent {session_id} terminated"
 
     async def shutdown(self) -> None:
         """Close all sub-agent drivers (sends terminate to remote daemons)."""

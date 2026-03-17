@@ -39,10 +39,12 @@ class SubAgentDriver(Channel):
         session_id: str,
         parent_session: Session,
         child_session: Session,
+        single_turn: bool = True,
     ) -> None:
         self._session_id = session_id
         self._parent_session = parent_session
         self._child_session = child_session
+        self._single_turn = single_turn
 
         self._status: str = "running"  # running | completed | failed | interrupted
         self._result: str | None = None
@@ -216,6 +218,13 @@ class SubAgentDriver(Channel):
                             self._result,
                             extra={"session_id": self._session_id},
                         )
+                    if self._single_turn:
+                        self._status = "completed"
+                        logger.info(
+                            "[SUBAGENT %s] single_turn: breaking after first turn",
+                            self._session_id,
+                        )
+                        break
 
                 # Clean exit — track status internally only
                 if self._status == "running":
