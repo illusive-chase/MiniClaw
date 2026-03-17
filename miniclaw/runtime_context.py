@@ -139,8 +139,8 @@ class RuntimeContext:
 
         logger.debug(
             "[RUNTIME] _spawn_remote: agent_type=%s, remote=%s, ws_url=%s, "
-            "parent_id=%s, task_preview=%.100s",
-            agent_type, remote, ws_url, self._parent.id, task,
+            "cwd=%s, parent_id=%s, task_preview=%.100s",
+            agent_type, remote, ws_url, cwd or "none", self._parent.id, task,
         )
 
         driver = RemoteSubAgentDriver(
@@ -156,8 +156,8 @@ class RuntimeContext:
         driver.start()
 
         logger.info(
-            "Spawned remote sub-agent %s (type=%s, remote=%s) from parent %s",
-            session_id, agent_type, remote, self._parent.id,
+            "Spawned remote sub-agent %s (type=%s, remote=%s, cwd=%s) from parent %s",
+            session_id, agent_type, remote, cwd or "none", self._parent.id,
         )
         return session_id
 
