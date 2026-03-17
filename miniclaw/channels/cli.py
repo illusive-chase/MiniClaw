@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import AsyncIterator
 
-from rich.console import Console, ConsoleOptions, RenderResult
+from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -147,7 +147,8 @@ class CLIChannel(Channel):
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    content = Group(Markdown(buffer), spinner) if buffer else spinner
+                    panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, InteractionRequest):
@@ -158,7 +159,7 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
@@ -211,18 +212,20 @@ class CLIChannel(Channel):
                     buffer = ""
                     tracker = ActivityTracker()
                     footer = ActivityFooter()
+                    spinner = Spinner("dots", text="Thinking...", style="bold cyan")
                     live = Live(console=self._console, refresh_per_second=8)
                     live.start()
 
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    content = Group(Markdown(buffer), spinner) if buffer else spinner
+                    panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
