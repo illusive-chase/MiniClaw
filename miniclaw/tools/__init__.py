@@ -91,7 +91,7 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
         from miniclaw.tools.session_tools import (
             CancelAgentTool,
             LaunchAgentTool,
-            MessageAgentTool,
+            # MessageAgentTool, # NOTE: we does not support multi-turn sub-agent for now
             ReplyAgentTool,
             WaitAgentTool,
         )
@@ -99,7 +99,7 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
         for cls in (
             LaunchAgentTool,
             ReplyAgentTool,
-            MessageAgentTool,
+            # MessageAgentTool, # NOTE: we does not support multi-turn sub-agent for now
             CancelAgentTool,
             WaitAgentTool,
         ):

@@ -67,14 +67,15 @@ class LaunchAgentTool(Tool):
                         "runs in this directory instead."
                     ),
                 },
-                "single_turn": {
-                    "type": "boolean",
-                    "description": (
-                        "If true (default), the sub-agent auto-terminates after "
-                        "its first completed turn. Set to false to keep the "
-                        "sub-agent alive for follow-up messages via message_agent."
-                    ),
-                },
+                # NOTE: we does not support multi-turn sub-agent for now
+                # "single_turn": {
+                #     "type": "boolean",
+                #     "description": (
+                #         "If true (default), the sub-agent auto-terminates after "
+                #         "its first completed turn. Set to false to keep the "
+                #         "sub-agent alive for follow-up messages via message_agent."
+                #     ),
+                # },
             },
             "required": ["type", "task"],
         }
