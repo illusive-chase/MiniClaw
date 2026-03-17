@@ -134,6 +134,7 @@ class CLIChannel(Channel):
     async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Stream response to the console with progressive markdown."""
         buffer = ""
+        empty_line = Text("")
         tracker = ActivityTracker()
         footer = ActivityFooter()
         live = Live(console=self._console, refresh_per_second=8)
@@ -147,7 +148,7 @@ class CLIChannel(Channel):
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                    content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
@@ -159,7 +160,7 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer + "\n\n"), spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
@@ -174,7 +175,7 @@ class CLIChannel(Channel):
                         u = event.usage
                         total = u.input_tokens + u.output_tokens
                         spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
-                        content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                        content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="blue")
                         live.update(StreamDisplay(panel, footer))
 
@@ -219,6 +220,7 @@ class CLIChannel(Channel):
                 # Start Live on first event of a new turn
                 if live is None:
                     buffer = ""
+                    empty_line = Text("")
                     tracker = ActivityTracker()
                     footer = ActivityFooter()
                     spinner = Spinner("bouncingBall", text="Thinking...", style="bold cyan")
@@ -228,13 +230,13 @@ class CLIChannel(Channel):
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
-                    content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                    content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer + "\n\n"), spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="blue")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
@@ -252,7 +254,7 @@ class CLIChannel(Channel):
                         u = event.usage
                         total = u.input_tokens + u.output_tokens
                         spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
-                        content = Group(Markdown(buffer + "\n\n"), spinner) if buffer else spinner
+                        content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="blue")
                         if live is not None:
                             live.update(StreamDisplay(panel, footer))

@@ -276,10 +276,10 @@ class PlugCtxManager:
     # --- Agent integration ---
 
     def active_project_cwd(self) -> str | None:
-        """Return workspace path of the active project-type context, or None."""
+        """Return the filesystem directory of the active project-type context, or None."""
         project = self._registry.active_project()
-        if project is not None and project.manifest.workspace:
-            return project.manifest.workspace
+        if project is not None:
+            return str(dotted_to_fs_path(self._ctx_root, project.path))
         return None
 
     def render_prompt_section(self) -> str:
