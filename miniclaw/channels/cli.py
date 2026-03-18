@@ -221,6 +221,7 @@ class CLIChannel(Channel):
         """Stream response to the console with progressive markdown."""
         buffer = ""
         empty_line = Text("")
+        final_panel = None  # set when final UsageEvent arrives; preserved in finally
         tracker = ActivityTracker()
         footer = ActivityFooter()
         live = Live(console=self._console, refresh_per_second=8)
@@ -253,8 +254,8 @@ class CLIChannel(Channel):
                     if event.final:
                         usage_renderable = self._render_usage(event)
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
-                        panel = Panel(content, title="Assistant", border_style="blue")
-                        live.update(StreamDisplay(panel, footer))
+                        final_panel = Panel(content, title="Assistant", border_style="blue")
+                        live.update(StreamDisplay(final_panel, footer))
                     else:
                         # Intermediate: update spinner text with running token count
                         spinner.text = self._render_spinner_usage(event)
@@ -264,11 +265,13 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, InterruptedEvent):
                     buffer += "\n\n[interrupted]"
-                    panel = Panel(Markdown(buffer), title="Assistant", border_style="yellow")
-                    live.update(panel)
+                    final_panel = Panel(Markdown(buffer), title="Assistant", border_style="yellow")
+                    live.update(final_panel)
 
         finally:
-            if buffer:
+            if final_panel:
+                live.update(final_panel)
+            elif buffer:
                 live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
             live.stop()
 
