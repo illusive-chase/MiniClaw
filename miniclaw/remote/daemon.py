@@ -252,6 +252,7 @@ class RemoteDaemon:
                 system_prompt=cfg.system_prompt or "",
                 default_model=cfg.model or self._config["provider"].get("model", ""),
                 temperature=cfg.temperature or 0.7,
+                context_window=self._config["provider"].get("context_window", 0),
             )
 
         sm = SessionManager(workspace_dir)

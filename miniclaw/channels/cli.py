@@ -10,7 +10,9 @@ from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.spinner import Spinner
+from rich.table import Table
 from rich.text import Text
 
 from miniclaw.activity import (
@@ -131,6 +133,90 @@ class CLIChannel(Channel):
     def __init__(self, console: Console) -> None:
         self._console = console
 
+    @staticmethod
+    def _fmt_k(n: int) -> str:
+        """Format token counts compactly: 1500 -> '1.5k', 12345 -> '12k', 200000 -> '200k'."""
+        if n < 1000:
+            return str(n)
+        k = n / 1000
+        if k == int(k):
+            return f"{int(k)}k"
+        return f"{k:.1f}k"
+
+    @staticmethod
+    def _render_usage(event: UsageEvent) -> Text | Table:
+        """Build a Rich renderable for the usage footer."""
+        u = event.usage
+        total = u.input_tokens + u.output_tokens
+
+        if (
+            event.context_tokens is not None
+            and event.context_window is not None
+            and event.context_window > 0
+        ):
+            pct = min(100, event.context_tokens * 100 // event.context_window)
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column()  # Total
+            grid.add_column()  # Context label
+            grid.add_column()  # Progress bar
+            grid.add_column()  # (Xk/Yk)
+            grid.add_row(
+                Text(f"Total: {total:,}", style="bold"),
+                Text(f"Context ({pct}%):", style="dim"),
+                ProgressBar(
+                    total=event.context_window,
+                    completed=event.context_tokens,
+                    width=20,
+                ),
+                Text(
+                    f"({CLIChannel._fmt_k(event.context_tokens)}"
+                    f"/{CLIChannel._fmt_k(event.context_window)})",
+                    style="dim",
+                ),
+            )
+            return grid
+        else:
+            return Text(
+                f"tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
+            )
+
+    @staticmethod
+    def _render_spinner_usage(event: UsageEvent) -> Text | Table:
+        """Build a Rich renderable for the spinner text during thinking."""
+        u = event.usage
+        total = u.input_tokens + u.output_tokens
+
+        if (
+            event.context_tokens is not None
+            and event.context_window is not None
+            and event.context_window > 0
+        ):
+            pct = min(100, event.context_tokens * 100 // event.context_window)
+            grid = Table.grid(padding=(0, 1))
+            grid.add_column()  # Thinking + Total
+            grid.add_column()  # Context label
+            grid.add_column()  # Progress bar
+            grid.add_column()  # (Xk/Yk)
+            grid.add_row(
+                Text(f"Thinking... (Total: {total:,})", style="bold cyan"),
+                Text(f"Context ({pct}%):", style="dim"),
+                ProgressBar(
+                    total=event.context_window,
+                    completed=event.context_tokens,
+                    width=20,
+                ),
+                Text(
+                    f"({CLIChannel._fmt_k(event.context_tokens)}"
+                    f"/{CLIChannel._fmt_k(event.context_window)})",
+                    style="dim",
+                ),
+            )
+            return grid
+        else:
+            return Text(
+                f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
+            )
+
     async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Stream response to the console with progressive markdown."""
         buffer = ""
@@ -165,16 +251,13 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, UsageEvent):
                     if event.final:
-                        u = event.usage
-                        total = u.input_tokens + u.output_tokens
-                        buffer += f"\n\n> tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
-                        panel = Panel(Markdown(buffer), title="Assistant", border_style="blue")
+                        usage_renderable = self._render_usage(event)
+                        content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
+                        panel = Panel(content, title="Assistant", border_style="blue")
                         live.update(StreamDisplay(panel, footer))
                     else:
                         # Intermediate: update spinner text with running token count
-                        u = event.usage
-                        total = u.input_tokens + u.output_tokens
-                        spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
+                        spinner.text = self._render_spinner_usage(event)
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="blue")
                         live.update(StreamDisplay(panel, footer))
@@ -241,19 +324,16 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, UsageEvent):
                     if event.final:
-                        u = event.usage
-                        total = u.input_tokens + u.output_tokens
-                        buffer += f"\n\n> tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
+                        usage_renderable = self._render_usage(event)
+                        content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
                         # Turn complete — finalize and stop Live
                         if live is not None:
-                            live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                            live.update(Panel(content, title="Assistant", border_style="blue"))
                             live.stop()
                             live = None
                     else:
                         # Intermediate: update spinner text with running token count
-                        u = event.usage
-                        total = u.input_tokens + u.output_tokens
-                        spinner.text = f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
+                        spinner.text = self._render_spinner_usage(event)
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="blue")
                         if live is not None:

@@ -84,6 +84,7 @@ def main() -> None:
             system_prompt=cfg.system_prompt or "",
             default_model=cfg.model or config["provider"].get("model", ""),
             temperature=cfg.temperature or 0.7,
+            context_window=config["provider"].get("context_window", 0),
         )
 
     # Build runtime

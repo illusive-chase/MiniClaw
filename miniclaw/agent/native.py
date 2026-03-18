@@ -91,12 +91,14 @@ class NativeAgent:
         system_prompt: str = "",
         default_model: str = "",
         temperature: float = 0.7,
+        context_window: int = 0,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
         self._system_prompt = system_prompt
         self._default_model = default_model
         self._temperature = temperature
+        self._context_window = context_window
         self._usage: dict[str, UsageStats] = {}
 
     # --- AgentProtocol ---
@@ -173,6 +175,7 @@ class NativeAgent:
         turn_usage = UsageStats()  # per-message usage (yielded to channel)
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
+        last_input_tokens = 0  # input_tokens from most recent LLM call (context size)
 
         # Tool loop
         for iteration in range(max_iterations):
@@ -213,9 +216,14 @@ class NativeAgent:
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._accumulate_usage(response, elapsed_ms)
             turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
+            last_input_tokens = response.usage.input_tokens if response.usage else 0
 
             # Intermediate usage update — lets the channel show running token count
-            yield UsageEvent(usage=turn_usage.copy(), final=False)
+            yield UsageEvent(
+                usage=turn_usage.copy(), final=False,
+                context_tokens=last_input_tokens,
+                context_window=self._context_window or None,
+            )
 
             logger.info(
                 "[NATIVE iter=%d] LLM call done: duration_ms=%d, input_tokens=%d, "
@@ -346,7 +354,11 @@ class NativeAgent:
             len(reply), len(updated_history),
         )
 
-        yield UsageEvent(usage=turn_usage)
+        yield UsageEvent(
+            usage=turn_usage,
+            context_tokens=last_input_tokens,
+            context_window=self._context_window or None,
+        )
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:

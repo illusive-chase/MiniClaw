@@ -54,6 +54,8 @@ class UsageEvent:
 
     usage: UsageStats
     final: bool = True
+    context_tokens: int | None = None
+    context_window: int | None = None
 
 
 # Union of all event types yielded by agents.

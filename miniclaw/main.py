@@ -56,6 +56,7 @@ def main() -> None:
             system_prompt=cfg.system_prompt or agent_config.system_prompt,
             default_model=cfg.model or agent_config.model,
             temperature=cfg.temperature or agent_config.temperature,
+            context_window=config["provider"].get("context_window", 0),
         )
 
     # CCAgent factory (if ccagent config is available)

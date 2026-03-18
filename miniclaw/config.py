@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
         "model": "gpt-4o",
         "temperature": 0.7,
         "max_tokens": 8192,
+        "context_window": 0,
     },
     "channel": {
         "type": "cli",
