@@ -59,7 +59,7 @@ EOF
 2. Type `/plugctx list`
 
 **Expected Behavior**:
-- A "Contexts" panel with cyan border appears
+- A "Contexts" panel with magenta border appears
 - Lists all three contexts: `general.coding`, `general.testing`, `project.myapp`
 - None are marked as loaded (no green `*` marker)
 
@@ -110,7 +110,7 @@ EOF
 2. Type `/plugctx status`
 
 **Expected Behavior**:
-- A "Loaded Contexts" panel with cyan border
+- A "Loaded Contexts" panel with magenta border
 - Each loaded context shows: path, token estimate, source (manual/dependency)
 - Contexts loaded as dependencies show source `dependency`
 - Total token count at the bottom

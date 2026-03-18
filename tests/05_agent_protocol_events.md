@@ -75,7 +75,7 @@ python cc_main.py
 2. Observe the interaction prompt
 
 **Expected Behavior**:
-- An "Agent Question" panel with cyan border appears
+- An "Agent Question" panel with magenta border appears
 - Shows the question text and numbered options
 - Last option is always "Other (type your answer)"
 - Selecting a number returns that choice

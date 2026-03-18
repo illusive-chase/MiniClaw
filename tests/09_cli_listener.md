@@ -35,7 +35,7 @@ python main.py
 1. Type `/help`
 
 **Expected Behavior**:
-- A "Help" panel with cyan border lists all available commands:
+- A "Help" panel with magenta border lists all available commands:
   - /help, /reset, /sessions, /resume, /fork, /attach, /detach
   - /model, /effort, /cost, /rename, /logging, /quit, /exit, /q
 - Note: /pipe and /unpipe are NOT listed (removed in favor of SubAgentDriver)

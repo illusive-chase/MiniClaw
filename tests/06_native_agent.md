@@ -108,7 +108,7 @@ Ensure `config.yaml` has a working provider (OpenAI or Anthropic).
 **Steps**:
 1. Send: `I want to create a new file. Ask me what programming language I'd like to use.`
 2. The agent should invoke `AskUserQuestion` with language options
-3. A cyan "Agent Question" panel appears with numbered choices + "Other"
+3. A magenta "Agent Question" panel appears with numbered choices + "Other"
 4. Type a number (e.g., `1`) and press Enter
 
 **Expected Behavior**:

@@ -64,7 +64,7 @@ class ActivityFooter:
                 style="bold yellow" if snap.tool_done < snap.tool_total else "dim",
             )
             if snap.tool_earliest:
-                line.append(f"  [{_format_elapsed(snap.tool_earliest, snap.tool_finished)}]", style="bold cyan")
+                line.append(f"  [{_format_elapsed(snap.tool_earliest, snap.tool_finished)}]", style="bold magenta")
             yield line
 
             for recent in snap.tool_recents:
@@ -80,7 +80,7 @@ class ActivityFooter:
                 else:
                     detail.append(recent.name, style="italic")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
-                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold cyan")
+                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold magenta")
                 elif recent.finished is not None:
                     detail.append(f"  [{_format_elapsed(recent.timestamp, recent.finished)}]", style="dim")
                 yield detail
@@ -93,7 +93,7 @@ class ActivityFooter:
                 style="bold yellow" if snap.agent_done < snap.agent_total else "dim",
             )
             if snap.agent_earliest:
-                line.append(f"  [{_format_elapsed(snap.agent_earliest, snap.agent_finished)}]", style="bold cyan")
+                line.append(f"  [{_format_elapsed(snap.agent_earliest, snap.agent_finished)}]", style="bold magenta")
             yield line
 
             for recent in snap.agent_recents:
@@ -109,7 +109,7 @@ class ActivityFooter:
                 else:
                     detail.append(recent.name, style="italic")
                 if recent.status in (ActivityStatus.START, ActivityStatus.PROGRESS):
-                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold cyan")
+                    detail.append(f"  [{_format_elapsed(recent.timestamp)}]", style="bold magenta")
                 elif recent.finished is not None:
                     detail.append(f"  [{_format_elapsed(recent.timestamp, recent.finished)}]", style="dim")
                 yield detail
@@ -144,44 +144,7 @@ class CLIChannel(Channel):
         return f"{k:.1f}k"
 
     @staticmethod
-    def _render_usage(event: UsageEvent) -> Text | Table:
-        """Build a Rich renderable for the usage footer."""
-        u = event.usage
-        total = u.input_tokens + u.output_tokens
-
-        if (
-            event.context_tokens is not None
-            and event.context_window is not None
-            and event.context_window > 0
-        ):
-            pct = min(100, event.context_tokens * 100 // event.context_window)
-            grid = Table.grid(padding=(0, 1))
-            grid.add_column()  # Total
-            grid.add_column()  # Context label
-            grid.add_column()  # Progress bar
-            grid.add_column()  # (Xk/Yk)
-            grid.add_row(
-                Text(f"Total: {total:,}", style="bold"),
-                Text(f"Context ({pct}%):", style="dim"),
-                ProgressBar(
-                    total=event.context_window,
-                    completed=event.context_tokens,
-                    width=20,
-                ),
-                Text(
-                    f"({CLIChannel._fmt_k(event.context_tokens)}"
-                    f"/{CLIChannel._fmt_k(event.context_window)})",
-                    style="dim",
-                ),
-            )
-            return grid
-        else:
-            return Text(
-                f"tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}"
-            )
-
-    @staticmethod
-    def _render_spinner_usage(event: UsageEvent) -> Text | Table:
+    def _render_usage(event: UsageEvent, spinner: bool = False) -> Text | Table:
         """Build a Rich renderable for the spinner text during thinking."""
         u = event.usage
         total = u.input_tokens + u.output_tokens
@@ -193,13 +156,8 @@ class CLIChannel(Channel):
         ):
             pct = min(100, event.context_tokens * 100 // event.context_window)
             grid = Table.grid(padding=(0, 1))
-            grid.add_column()  # Thinking + Total
-            grid.add_column()  # Context label
-            grid.add_column()  # Progress bar
-            grid.add_column()  # (Xk/Yk)
-            grid.add_row(
-                Text(f"Thinking... (Total: {total:,})", style="bold cyan"),
-                Text(f"Context ({pct}%):", style="dim"),
+            rows = [
+                Text(f"[Total: {total:,}]  Context ({pct}%):", style="bold magenta"),
                 ProgressBar(
                     total=event.context_window,
                     completed=event.context_tokens,
@@ -208,14 +166,26 @@ class CLIChannel(Channel):
                 Text(
                     f"({CLIChannel._fmt_k(event.context_tokens)}"
                     f"/{CLIChannel._fmt_k(event.context_window)})",
-                    style="dim",
+                    style="light_steel_blue1",
                 ),
-            )
+            ]
+            if spinner:
+                grid.add_column()  # Thinking
+                rows.insert(0, Text("Thinking... ", style="bold magenta"))
+            grid.add_column()  # Total + Context label
+            grid.add_column()  # Progress bar
+            grid.add_column()  # (Xk/Yk)
+            grid.add_row(*rows)
             return grid
         else:
-            return Text(
-                f"Thinking... (tokens: {total:,} = {u.input_tokens:,} + {u.output_tokens:,})"
-            )
+            info = Text(f"[Total: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}] ", style="bold magenta")
+            if spinner:
+                grid = Table.grid(padding=(0, 1))
+                grid.add_column()  # Thinking
+                grid.add_column()  # Total + Context label
+                grid.add_row(Text("Thinking... ", style="bold magenta"), info)
+                return grid
+            return info
 
     async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Stream response to the console with progressive markdown."""
@@ -228,15 +198,15 @@ class CLIChannel(Channel):
         live.start()
 
         try:
-            spinner = Spinner("bouncingBall", text="Thinking...", style="bold cyan")
-            live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="blue"), footer))
+            spinner = Spinner("bouncingBall", text=Text("Thinking...", style="bold magenta"), style="bold magenta")
+            live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="magenta"), footer))
 
             async for event in stream:
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
                     content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
-                    panel = Panel(content, title="Assistant", border_style="blue")
+                    panel = Panel(content, title="Assistant", border_style="magenta")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, InteractionRequest):
@@ -247,20 +217,20 @@ class CLIChannel(Channel):
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="magenta")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
                     if event.final:
                         usage_renderable = self._render_usage(event)
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
-                        final_panel = Panel(content, title="Assistant", border_style="blue")
+                        final_panel = Panel(content, title="Assistant", border_style="magenta")
                         live.update(StreamDisplay(final_panel, footer))
                     else:
                         # Intermediate: update spinner text with running token count
-                        spinner.text = self._render_spinner_usage(event)
+                        spinner.text = self._render_usage(event, spinner=True)
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
-                        panel = Panel(content, title="Assistant", border_style="blue")
+                        panel = Panel(content, title="Assistant", border_style="magenta")
                         live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, InterruptedEvent):
@@ -272,11 +242,11 @@ class CLIChannel(Channel):
             if final_panel:
                 live.update(final_panel)
             elif buffer:
-                live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                live.update(Panel(Markdown(buffer), title="Assistant", border_style="magenta"))
             live.stop()
 
     async def send(self, text: str) -> None:
-        self._console.print(Panel(Markdown(text), title="Assistant", border_style="blue"))
+        self._console.print(Panel(Markdown(text), title="Assistant", border_style="magenta"))
 
     async def on_observe(self, stream: AsyncIterator[AgentEvent]) -> None:
         """Render events as a read-only observer without a permanent Live display.
@@ -309,7 +279,7 @@ class CLIChannel(Channel):
                     empty_line = Text("")
                     tracker = ActivityTracker()
                     footer = ActivityFooter()
-                    spinner = Spinner("bouncingBall", text="Thinking...", style="bold cyan")
+                    spinner = Spinner("bouncingBall", text=Text("Thinking...", style="bold magenta"), style="bold magenta")
                     live = Live(console=self._console, refresh_per_second=8)
                     live.start()
 
@@ -317,12 +287,12 @@ class CLIChannel(Channel):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
                     content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
-                    panel = Panel(content, title="Assistant", border_style="blue")
+                    panel = Panel(content, title="Assistant", border_style="magenta")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
-                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="blue")
+                    panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="magenta")
                     live.update(StreamDisplay(panel, footer))
 
                 elif isinstance(event, UsageEvent):
@@ -331,14 +301,14 @@ class CLIChannel(Channel):
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
                         # Turn complete — finalize and stop Live
                         if live is not None:
-                            live.update(Panel(content, title="Assistant", border_style="blue"))
+                            live.update(Panel(content, title="Assistant", border_style="magenta"))
                             live.stop()
                             live = None
                     else:
                         # Intermediate: update spinner text with running token count
-                        spinner.text = self._render_spinner_usage(event)
+                        spinner.text = self._render_usage(event, spinner=True)
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
-                        panel = Panel(content, title="Assistant", border_style="blue")
+                        panel = Panel(content, title="Assistant", border_style="magenta")
                         if live is not None:
                             live.update(StreamDisplay(panel, footer))
 
@@ -353,15 +323,15 @@ class CLIChannel(Channel):
             # Cleanup on detach (task cancellation) or stream end
             if live is not None:
                 if buffer:
-                    live.update(Panel(Markdown(buffer), title="Assistant", border_style="blue"))
+                    live.update(Panel(Markdown(buffer), title="Assistant", border_style="magenta"))
                 live.stop()
 
     async def replay(self, history: list[ChatMessage]) -> None:
         for msg in history:
             if msg.role == "user" and msg.content:
-                self._console.print(Panel(msg.content, title="You", border_style="green"))
+                self._console.print(Panel(msg.content, title="You", border_style="deep_pink4"))
             elif msg.role == "assistant" and msg.content:
-                self._console.print(Panel(Markdown(msg.content), title="Assistant", border_style="blue"))
+                self._console.print(Panel(Markdown(msg.content), title="Assistant", border_style="magenta"))
 
     # --- Interaction prompts (reused from original CLIChannel) ---
 
@@ -412,7 +382,7 @@ class CLIChannel(Channel):
                 lines.append(f"  [dim][{i}][/dim] {label}" + (f" \u2014 {desc}" if desc else ""))
             lines.append(f"  [dim][{len(options) + 1}][/dim] Other (type your answer)")
 
-            self._console.print(Panel("\n".join(lines), title="Agent Question", border_style="cyan"))
+            self._console.print(Panel("\n".join(lines), title="Agent Question", border_style="magenta"))
             choice = input("> ").strip()
 
             other_idx = str(len(options) + 1)
@@ -438,9 +408,9 @@ class CLIChannel(Channel):
         plan_content = tool_input.get("plan", "") or tool_input.get("content", "")
 
         if plan_content:
-            self._console.print(Panel(Markdown(plan_content), title="Plan Review", border_style="green"))
+            self._console.print(Panel(Markdown(plan_content), title="Plan Review", border_style="deep_pink4"))
         else:
-            self._console.print(Panel("[dim]The agent has prepared a plan.[/dim]", title="Plan Review", border_style="green"))
+            self._console.print(Panel("[dim]The agent has prepared a plan.[/dim]", title="Plan Review", border_style="deep_pink4"))
 
         self._console.print(
             "[dim][1] Yes, clear context and auto-accept edits\n"

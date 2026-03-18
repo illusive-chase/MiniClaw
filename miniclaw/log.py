@@ -85,6 +85,9 @@ _console = Console(theme=Theme({
     "markdown.code": "bold magenta on white",
     "markdown.code_block": "magenta on white",
     "markdown.hr": "gray70",
+    "bar.complete": "magenta",
+    "bar.finished": "red",
+    "bar.back": "light_steel_blue1",
 }))
 
 def setup_console_logging(console_level: int) -> RichHandler:

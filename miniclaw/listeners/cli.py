@@ -99,7 +99,7 @@ class CLIListener(Listener):
 
         signal.signal(signal.SIGINT, _sigint_handler)
 
-        console.print(Panel("MiniClaw", subtitle="type /help for commands", style="bold cyan"))
+        console.print(Panel("MiniClaw", subtitle="type /help for commands", style="bold magenta"))
 
         try:
             while True:
@@ -183,7 +183,7 @@ class CLIListener(Listener):
                 "  /cd [path]        Change working directory (no args = reset)\n"
                 "  /quit, /exit, /q  Exit the REPL",
                 title="Help",
-                border_style="cyan",
+                border_style="magenta",
             ))
 
         elif cmd == "reset":
@@ -205,7 +205,7 @@ class CLIListener(Listener):
                 for s in sessions[:20]:
                     name = s.name or "unnamed"
                     lines.append(f"  {s.id}  {name}  ({s.updated_at})")
-                console.print(Panel("\n".join(lines), title="Sessions", border_style="cyan"))
+                console.print(Panel("\n".join(lines), title="Sessions", border_style="magenta"))
 
         elif cmd == "resume":
             if not args:
@@ -410,7 +410,7 @@ class CLIListener(Listener):
                 marker = "[green]*[/green]" if c["loaded"] else " "
                 tokens = f"(~{c['token_estimate']:,} tokens)" if c["token_estimate"] else ""
                 lines.append(f"  {marker} {c['path']} {tokens}")
-            console.print(Panel("\n".join(lines), title="Contexts", border_style="cyan"))
+            console.print(Panel("\n".join(lines), title="Contexts", border_style="magenta"))
 
         elif subcmd == "status":
             result = session.plugctx.status()
@@ -422,7 +422,7 @@ class CLIListener(Listener):
                 desc = f" — {entry['description']}" if entry["description"] else ""
                 lines.append(f"  {entry['path']} (~{entry['token_estimate']:,} tokens, {entry['source']}){desc}")
             lines.append(f"\n  Total: ~{result['total_tokens']:,} tokens")
-            console.print(Panel("\n".join(lines), title="Loaded Contexts", border_style="cyan"))
+            console.print(Panel("\n".join(lines), title="Loaded Contexts", border_style="magenta"))
 
         elif subcmd == "info":
             if not subargs:
@@ -448,7 +448,7 @@ class CLIListener(Listener):
             if result["children"]:
                 lines.append(f"  Children: {', '.join(result['children'])}")
             lines.append(f"\n  Preview:\n{result['preview']}")
-            console.print(Panel("\n".join(lines), title=f"Context: {result['path']}", border_style="cyan"))
+            console.print(Panel("\n".join(lines), title=f"Context: {result['path']}", border_style="magenta"))
 
         elif subcmd == "init":
             await self._handle_plugctx_init(session, console)
