@@ -35,8 +35,6 @@ class FileReadTool(Tool):
         if not path.is_absolute():
             path = self._cwd / path
         resolved = path.resolve()
-        if not resolved.is_relative_to(self._cwd.resolve()):
-            return ToolResult(output=f"Path {path_str} is outside the working directory", success=False)
         path = resolved
         try:
             content = path.read_text(errors="replace")
