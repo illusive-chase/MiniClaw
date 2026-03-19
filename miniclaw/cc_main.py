@@ -11,6 +11,7 @@ from miniclaw.config import load_config
 from miniclaw.log import setup_console_logging, setup_file_logging
 from miniclaw.persistence import SessionManager
 from miniclaw.agent.cc import CCAgent
+from miniclaw.agent.cc_tmux import CCTmuxAgent
 from miniclaw.agent.config import AgentConfig
 from miniclaw.listeners import create_listener
 from miniclaw.runtime import Runtime
@@ -57,17 +58,18 @@ def main() -> None:
         effort=cc_cfg.get("effort", "medium"),
     )
 
-    # CCAgent factory (per-session)
+    # CCTmuxAgent factory (per-session) — tmux-based TUI wrapper
     def build_ccagent(cfg, runtime_context=None):
-        return CCAgent(
+        return CCTmuxAgent(
             system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
             default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
             permission_mode=cc_cfg.get("permission_mode", "default"),
-            allowed_tools=cc_cfg.get("allowed_tools"),
             cwd=cc_cfg.get("cwd") or os.getcwd(),
             max_turns=cc_cfg.get("max_turns"),
-            thinking=cc_cfg.get("thinking"),
-            effort=cc_cfg.get("effort"),
+            claude_bin=cc_cfg.get("claude_bin", "claude"),
+            poll_interval=cc_cfg.get("poll_interval_ms", 150) / 1000.0,
+            allowed_tools=cc_cfg.get("allowed_tools"),
+            effort=cc_cfg.get("effort", "medium"),
         )
 
     # NativeAgent factory (for sub-agents or other use)
