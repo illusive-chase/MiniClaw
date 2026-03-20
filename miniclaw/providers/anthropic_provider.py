@@ -84,6 +84,7 @@ class AnthropicProvider(Provider):
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
+            "cache_control": {"type": "ephemeral"},
         }
         if system:
             kwargs["system"] = system
@@ -155,6 +156,7 @@ class AnthropicProvider(Provider):
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
+            "cache_control": {"type": "ephemeral"},
         }
         if system:
             kwargs["system"] = system

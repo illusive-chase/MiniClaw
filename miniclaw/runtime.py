@@ -242,7 +242,17 @@ class Runtime:
             updated_at=session.metadata.updated_at,
             name=session.metadata.name,
             agent_type=session.agent.agent_type,
-            agent_config=asdict(session.agent_config),
+            agent_config={
+                k: v
+                for k, v in asdict(session.agent_config).items()
+                if k != "extra"
+            } | {
+                "extra": {
+                    k: v
+                    for k, v in session.agent_config.extra.items()
+                    if not k.startswith("_")
+                }
+            },
             agent_state=session.agent.serialize_state(),
             metadata={
                 "forked_from": session.metadata.forked_from,

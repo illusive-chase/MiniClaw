@@ -184,6 +184,13 @@ class LaunchAgentTool(Tool):
         if not task:
             return ToolResult(output="Error: 'task' is required.", success=False)
 
+        # Collect env vars (API credentials + plugctx runtime.env)
+        runtime = None
+        plugctx = self._ctx._parent.plugctx
+        if plugctx:
+            runtime = plugctx.active_runtime()
+        env = RunTool._build_env(runtime)
+
         try:
             session_id, warning = await self._ctx.spawn(
                 agent_type=agent_type,
@@ -191,6 +198,7 @@ class LaunchAgentTool(Tool):
                 remote=remote,
                 cwd=cwd,
                 single_turn=single_turn,
+                env=env,
             )
             location = f" (remote: {remote})" if remote else ""
             mode = "single-turn" if single_turn else "multi-turn"
