@@ -244,6 +244,14 @@ class Session:
                                 )
                                 self.history = []
                                 await self.agent.reset()
+                                # Unload plan-only contexts before execution phase
+                                if self.plugctx is not None:
+                                    removed = self.plugctx.unload_plan_only()
+                                    if removed:
+                                        logger.info(
+                                            "[SESSION %s] Unloaded plan-only contexts: %s",
+                                            self.id, removed,
+                                        )
                                 restart_text = event.payload.get(
                                     "plan_content", "Execute the plan."
                                 )

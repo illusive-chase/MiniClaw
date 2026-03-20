@@ -29,6 +29,7 @@ class ContextManifest:
     requires: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     type: str = "skill"       # "project" | "skill"
+    only_plan: bool = False    # unload automatically when plan is approved
     runtime: RuntimeConfig | None = None  # project-type only
 
 
@@ -107,6 +108,7 @@ def load_context_entry(
                 requires=data.get("requires", []),
                 tags=data.get("tags", []),
                 type=ctx_type,
+                only_plan=bool(data.get("only_plan", False)),
                 runtime=runtime,
             )
         except Exception:

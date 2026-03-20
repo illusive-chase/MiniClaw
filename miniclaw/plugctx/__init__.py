@@ -83,6 +83,7 @@ class PlugCtxManager:
                 "type": ctx_type,
                 "requires": requires,
                 "tags": [],
+                "only_plan": False,
             }
             if ctx_type == "project" and workspace:
                 manifest_data["runtime"] = {"workspace": workspace}
@@ -232,6 +233,17 @@ class PlugCtxManager:
             "warnings": warnings,
         }
 
+    def unload_plan_only(self) -> list[str]:
+        """Remove all contexts with only_plan=True. Returns unloaded paths."""
+        plan_only = [e.path for e in self._registry.all_entries() if e.manifest.only_plan]
+        unloaded = []
+        for path in plan_only:
+            entry = self._registry.remove(path)
+            if entry is not None:
+                unloaded.append(path)
+                logger.info("Unloaded plan-only context '%s' (~%d tokens)", path, entry.token_estimate)
+        return unloaded
+
     def list_contexts(self) -> list[dict]:
         """List all available contexts with loaded status."""
         all_paths = discover_all_contexts(self._ctx_root)
@@ -258,6 +270,7 @@ class PlugCtxManager:
                     "source": e.source,
                     "name": e.manifest.name,
                     "description": e.manifest.description,
+                    "only_plan": e.manifest.only_plan,
                 }
                 for e in entries
             ],
@@ -283,6 +296,7 @@ class PlugCtxManager:
             "description": entry.manifest.description,
             "requires": entry.manifest.requires,
             "tags": entry.manifest.tags,
+            "only_plan": entry.manifest.only_plan,
             "token_estimate": entry.token_estimate,
             "loaded": self._registry.is_loaded(dotted_path),
             "preview": preview,
