@@ -135,13 +135,14 @@ class LaunchAgentTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "type": {
-                    "type": "string",
-                    "description": (
-                        "Agent type to spawn. Usually 'ccagent' for a Claude Code "
-                        "backed sub-agent, or 'native' for a tool-loop agent."
-                    ),
-                },
+                # NOTE: we does not support native agent for now
+                # "type": {
+                #     "type": "string",
+                #     "description": (
+                #         "Agent type to spawn. Usually 'ccagent' for a Claude Code "
+                #         "backed sub-agent, or 'native' for a tool-loop agent."
+                #     ),
+                # },
                 "task": {
                     "type": "string",
                     "description": "The task instruction for the sub-agent.",
@@ -154,13 +155,14 @@ class LaunchAgentTool(Tool):
                         "sub-agent runs on a remote daemon."
                     ),
                 },
-                "cwd": {
-                    "type": "string",
-                    "description": (
-                        "Optional working directory. If provided, the sub-agent "
-                        "runs in this directory instead."
-                    ),
-                },
+                # NOTE: we does not support specific cwd for now
+                # "cwd": {
+                #     "type": "string",
+                #     "description": (
+                #         "Optional working directory. If provided, the sub-agent "
+                #         "runs in this directory instead."
+                #     ),
+                # },
                 # NOTE: we does not support multi-turn sub-agent for now
                 # "single_turn": {
                 #     "type": "boolean",
@@ -171,7 +173,7 @@ class LaunchAgentTool(Tool):
                 #     ),
                 # },
             },
-            "required": ["type", "task"],
+            "required": ["task"],
         }
 
     async def execute(self, args: dict) -> ToolResult:

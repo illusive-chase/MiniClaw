@@ -23,13 +23,23 @@ class AnthropicProvider(Provider):
         self._max_tokens = max_tokens
         self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
 
-    def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str, list[dict]]:
-        """Convert ChatMessages to Anthropic format. Returns (system, messages)."""
-        system = ""
+    @staticmethod
+    def _mark_last_block(blocks: list[dict]) -> None:
+        """Add cache_control to the last block in a list (in-place)."""
+        if blocks:
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
+    def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str | list[dict], list[dict]]:
+        """Convert ChatMessages to Anthropic format. Returns (system, messages).
+
+        System is returned as a list of content blocks (with cache_control on the last one)
+        when non-empty, or empty string when absent.
+        """
+        system_text = ""
         api_msgs = []
         for msg in messages:
             if msg.role == "system":
-                system = msg.content or ""
+                system_text = msg.content or ""
                 continue
             if msg.role == "assistant":
                 content = []
@@ -55,6 +65,27 @@ class AnthropicProvider(Provider):
                 })
             else:
                 api_msgs.append({"role": msg.role, "content": msg.content or ""})
+
+        # Mark the last content block of the last message for caching
+        
+
+        # Convert system to block format with cache_control
+        if system_text:
+            system = [{"type": "text", "text": system_text}]
+            if api_msgs:
+                last_msg = api_msgs[-1]
+                if isinstance(last_msg["content"], list):
+                    self._mark_last_block(last_msg["content"])
+                elif isinstance(last_msg["content"], str) and last_msg["content"]:
+                    # Convert plain string to block format so we can attach cache_control
+                    last_msg["content"] = [
+                        {"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}},
+                    ]
+            else:
+                self._mark_last_block(system)
+        else:
+            system = ""
+
         return system, api_msgs
 
     def _to_api_tools(self, tools: list[dict]) -> list[dict]:
@@ -84,7 +115,6 @@ class AnthropicProvider(Provider):
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
-            "cache_control": {"type": "ephemeral"},
         }
         if system:
             kwargs["system"] = system
@@ -156,7 +186,6 @@ class AnthropicProvider(Provider):
             "messages": api_msgs,
             "max_tokens": self._max_tokens,
             "temperature": temperature,
-            "cache_control": {"type": "ephemeral"},
         }
         if system:
             kwargs["system"] = system
