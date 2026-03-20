@@ -70,21 +70,29 @@ class AnthropicProvider(Provider):
         
 
         # Convert system to block format with cache_control
+        cache_breakpoints = []
         if system_text:
             system = [{"type": "text", "text": system_text}]
+            self._mark_last_block(system)  # Always cache system prompt
+            cache_breakpoints.append(f"system({len(system_text)} chars)")
             if api_msgs:
                 last_msg = api_msgs[-1]
                 if isinstance(last_msg["content"], list):
                     self._mark_last_block(last_msg["content"])
+                    cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
                 elif isinstance(last_msg["content"], str) and last_msg["content"]:
                     # Convert plain string to block format so we can attach cache_control
                     last_msg["content"] = [
                         {"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}},
                     ]
-            else:
-                self._mark_last_block(system)
+                    cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
         else:
             system = ""
+
+        logger.info(
+            "[PROVIDER] Cache breakpoints: %s",
+            ", ".join(cache_breakpoints) if cache_breakpoints else "none",
+        )
 
         return system, api_msgs
 
@@ -119,7 +127,10 @@ class AnthropicProvider(Provider):
         if system:
             kwargs["system"] = system
         if tools:
-            kwargs["tools"] = self._to_api_tools(tools)
+            api_tools = self._to_api_tools(tools)
+            self._mark_last_block(api_tools)  # Cache tool definitions
+            kwargs["tools"] = api_tools
+            logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 
         logger.info(
             "[PROVIDER] Anthropic chat: model=%s, messages=%d, tools=%d, temperature=%.2f",
@@ -154,15 +165,14 @@ class AnthropicProvider(Provider):
         )
 
         logger.info(
-            "[PROVIDER] Anthropic chat done: duration_ms=%d, input_tokens=%d, "
-            "output_tokens=%d, tool_calls=%d",
-            elapsed_ms, usage.input_tokens, usage.output_tokens, len(tool_calls),
+            "[PROVIDER] Anthropic chat done: duration_ms=%d, input=%d, output=%d, "
+            "cache_read=%d, cache_write=%d, tool_calls=%d",
+            elapsed_ms, usage.input_tokens, usage.output_tokens,
+            usage.cache_read_tokens, usage.cache_creation_tokens, len(tool_calls),
         )
         logger.debug(
-            "[PROVIDER] Anthropic chat response: text_preview=%s, "
-            "cache_read=%d, cache_creation=%d",
+            "[PROVIDER] Anthropic chat response: text_preview=%s",
             truncate("\n".join(text_parts)) if text_parts else "(none)",
-            usage.cache_read_tokens, usage.cache_creation_tokens,
         )
 
         return ChatResponse(
@@ -190,7 +200,10 @@ class AnthropicProvider(Provider):
         if system:
             kwargs["system"] = system
         if tools:
-            kwargs["tools"] = self._to_api_tools(tools)
+            api_tools = self._to_api_tools(tools)
+            self._mark_last_block(api_tools)  # Cache tool definitions
+            kwargs["tools"] = api_tools
+            logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 
         logger.info(
             "[PROVIDER] Anthropic stream: model=%s, messages=%d, tools=%d",
@@ -265,9 +278,10 @@ class AnthropicProvider(Provider):
         )
 
         logger.info(
-            "[PROVIDER] Anthropic stream done: duration_ms=%d, input_tokens=%d, "
-            "output_tokens=%d, tool_calls=%d, text_chunks=%d",
+            "[PROVIDER] Anthropic stream done: duration_ms=%d, input=%d, output=%d, "
+            "cache_read=%d, cache_write=%d, tool_calls=%d, text_chunks=%d",
             elapsed_ms, usage.input_tokens, usage.output_tokens,
+            usage.cache_read_tokens, usage.cache_creation_tokens,
             len(tool_calls), text_chunks,
         )
 
