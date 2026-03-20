@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -93,7 +94,14 @@ class CLIListener(Listener):
         # Install SIGINT handler
         original_handler = signal.getsignal(signal.SIGINT)
 
+        _last_sigint = 0.0
+
         def _sigint_handler(signum, frame):
+            nonlocal _last_sigint
+            now = time.monotonic()
+            if now - _last_sigint < 2.0:
+                raise KeyboardInterrupt  # force exit
+            _last_sigint = now
             if self._session is not None:
                 self._session.interrupt()
 

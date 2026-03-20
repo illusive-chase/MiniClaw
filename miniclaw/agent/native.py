@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from miniclaw.activity import ActivityEvent, ActivityKind, ActivityStatus
 from miniclaw.agent.config import AgentConfig
-from miniclaw.cancellation import CancellationToken, SignalType
+from miniclaw.cancellation import CancellationToken, CancelledError, SignalType
 from miniclaw.interactions import (
     InteractionRequest,
     InteractionResponse,
@@ -195,11 +195,14 @@ class NativeAgent:
             t0 = time.monotonic()
             response: ChatResponse | None = None
 
-            async for item in self._provider.chat_stream(
-                messages=messages,
-                tools=tool_specs if tool_specs else None,
-                model=effective_model or None,
-                temperature=config.temperature or self._temperature,
+            async for item in self._cancellable_aiter(
+                self._provider.chat_stream(
+                    messages=messages,
+                    tools=tool_specs if tool_specs else None,
+                    model=effective_model or None,
+                    temperature=config.temperature or self._temperature,
+                ),
+                token,
             ):
                 if isinstance(item, ChatResponse):
                     response = item
@@ -381,6 +384,32 @@ class NativeAgent:
         return {}
 
     # --- Internal ---
+
+    @staticmethod
+    async def _cancellable_aiter(aiter, token: CancellationToken):
+        """Yield items from *aiter*, raising CancelledError when *token* fires."""
+        it = aiter.__aiter__()
+        cancel_fut = asyncio.ensure_future(token.wait_cancelled())
+        try:
+            while True:
+                next_fut = asyncio.ensure_future(it.__anext__())
+                done, _ = await asyncio.wait(
+                    {next_fut, cancel_fut},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancel_fut in done:
+                    next_fut.cancel()
+                    try:
+                        await next_fut
+                    except BaseException:
+                        pass
+                    raise CancelledError("Processing interrupted by user")
+                try:
+                    yield next_fut.result()
+                except StopAsyncIteration:
+                    return
+        finally:
+            cancel_fut.cancel()
 
     @staticmethod
     def _drain_and_inject_signals(

@@ -57,6 +57,10 @@ class SignalToken:
         if self._event.is_set():
             raise CancelledError("Processing interrupted by user")
 
+    async def wait_cancelled(self) -> None:
+        """Block until cancellation is signaled."""
+        await self._event.wait()
+
     # --- New signal API ---
 
     def send(self, signal: Signal) -> None:
