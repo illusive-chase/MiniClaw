@@ -41,6 +41,7 @@ class RuntimeContext:
         remote: str | None = None,
         cwd: str | None = None,
         single_turn: bool = True,
+        env: dict[str, str] | None = None,
     ) -> tuple[str, str]:
         """Spawn a background sub-agent session.
 
@@ -52,6 +53,7 @@ class RuntimeContext:
                 If provided, spawns on a RemoteDaemon via WebSocket.
             single_turn: If True (default), auto-terminate the sub-agent
                 after its first completed turn.
+            env: Optional environment variables to inject into the sub-agent.
 
         Returns a tuple of (session_id, warning_text).
         Raises SpawnLimitError if limits are exceeded.
@@ -72,7 +74,7 @@ class RuntimeContext:
                 f"(max_total_spawns={config.max_total_spawns})."
             )
         if remote:
-            session_id = await self._spawn_remote(agent_type, task, remote, cwd, single_turn)
+            session_id = await self._spawn_remote(agent_type, task, remote, cwd, single_turn, env)
             self._total_spawns += 1
             warning = self._spawn_warning(running + 1, config)
             return session_id, warning
@@ -91,8 +93,11 @@ class RuntimeContext:
 
         # Create child session via Runtime
         agent_config = AgentConfig()
+        if env:
+            agent_config.extra["_runtime_env"] = env
         child_session = self._runtime.create_session(agent_type, agent_config)
         child_session.cwd_override = cwd
+        child_session.is_subagent = True
 
         # Create SubAgentDriver (dual-role: Channel for child, notifier for parent)
         driver = SubAgentDriver(
@@ -129,6 +134,7 @@ class RuntimeContext:
         remote: str,
         cwd: str | None = None,
         single_turn: bool = True,
+        env: dict[str, str] | None = None,
     ) -> str:
         """Spawn a sub-agent on a remote daemon via WebSocket."""
         from miniclaw.remote.remote_driver import RemoteSubAgentDriver
@@ -151,6 +157,7 @@ class RuntimeContext:
             task=task,
             cwd=cwd,
             single_turn=single_turn,
+            env=env,
         )
         self._drivers[session_id] = driver
         driver.start()

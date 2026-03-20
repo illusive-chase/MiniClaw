@@ -12,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class RuntimeConfig:
+    """Runtime environment for project-type contexts."""
+
+    workspace: str = ""     # absolute path on target machine
+    remote: str = ""        # optional, references config.yaml remotes.<name>
+    env: dict[str, str] = field(default_factory=dict)  # injected into ccagent
+
+
+@dataclass
 class ContextManifest:
     """Parsed manifest.yaml for a context folder."""
 
@@ -20,7 +29,7 @@ class ContextManifest:
     requires: list[str] = field(default_factory=list)
     tags: list[str] = field(default_factory=list)
     type: str = "skill"       # "project" | "skill"
-    workspace: str = ""       # absolute path to external folder (project-type only)
+    runtime: RuntimeConfig | None = None  # project-type only
 
 
 @dataclass
@@ -69,13 +78,36 @@ def load_context_entry(
     if manifest_file.exists():
         try:
             data = yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+            ctx_type = data.get("type", "skill")
+
+            # Parse runtime config
+            runtime: RuntimeConfig | None = None
+            runtime_data = data.get("runtime")
+            if runtime_data and isinstance(runtime_data, dict):
+                runtime = RuntimeConfig(
+                    workspace=runtime_data.get("workspace", ""),
+                    remote=runtime_data.get("remote", ""),
+                    env=runtime_data.get("env", {}),
+                )
+            elif data.get("workspace"):
+                # Backward compat: migrate top-level workspace to runtime
+                runtime = RuntimeConfig(workspace=data["workspace"])
+
+            # Skill contexts should not have runtime
+            if ctx_type == "skill" and runtime is not None:
+                logger.warning(
+                    "Ignoring runtime config on skill-type context '%s'",
+                    dotted_path,
+                )
+                runtime = None
+
             manifest = ContextManifest(
                 name=data.get("name", ""),
                 description=data.get("description", ""),
                 requires=data.get("requires", []),
                 tags=data.get("tags", []),
-                type=data.get("type", "skill"),
-                workspace=data.get("workspace", ""),
+                type=ctx_type,
+                runtime=runtime,
             )
         except Exception:
             logger.warning("Failed to parse manifest.yaml for '%s'", dotted_path)

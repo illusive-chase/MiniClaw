@@ -1,7 +1,11 @@
 """Tool ABC and data classes for tool execution."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -10,6 +14,17 @@ class ToolResult:
 
     output: str
     success: bool = True
+
+
+@dataclass
+class ToolPathContext:
+    """Context for virtual path resolution, set per-message."""
+
+    cwd: Path                                     # planspace or default cwd
+    ctx_root: Path | None = None                  # plugctx root for ctx:// resolution
+    workspace: str | None = None                  # absolute workspace path for workspace://
+    remote: str | None = None                     # remote name (if workspace is remote)
+    remote_reader: Any = None                     # async callable for remote file ops
 
 
 class Tool(ABC):

@@ -6,7 +6,7 @@ import logging
 import os
 from pathlib import Path
 
-from .base import Tool
+from .base import Tool, ToolPathContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +34,14 @@ class ToolRegistry:
         for tool in self._tools.values():
             if hasattr(tool, '_cwd'):
                 tool._cwd = Path(cwd) if isinstance(tool._cwd, Path) else cwd
+
+    def set_path_context(self, ctx: ToolPathContext) -> None:
+        """Update path context on all tools that support it."""
+        for tool in self._tools.values():
+            if hasattr(tool, '_cwd'):
+                tool._cwd = ctx.cwd
+            if hasattr(tool, '_path_ctx'):
+                tool._path_ctx = ctx
 
 
 def discover_tools(tools_dir: Path) -> list[Tool]:
@@ -93,11 +101,13 @@ def create_registry(config: dict, runtime_context=None) -> ToolRegistry:
             LaunchAgentTool,
             # MessageAgentTool, # NOTE: we does not support multi-turn sub-agent for now
             ReplyAgentTool,
+            RunTool,
             WaitAgentTool,
         )
 
         for cls in (
             LaunchAgentTool,
+            RunTool,
             ReplyAgentTool,
             # MessageAgentTool, # NOTE: we does not support multi-turn sub-agent for now
             CancelAgentTool,

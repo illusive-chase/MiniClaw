@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING
 
 from miniclaw.runtime_context import SpawnLimitError
@@ -13,6 +14,99 @@ if TYPE_CHECKING:
     from miniclaw.runtime_context import RuntimeContext
 
 logger = logging.getLogger(__name__)
+
+
+class RunTool(Tool):
+    """Dispatch a task to a ccagent worker. Runtime params derived from active project context."""
+
+    _manual_registration = True
+
+    def __init__(self, runtime_context: RuntimeContext) -> None:
+        self._ctx = runtime_context
+
+    def name(self) -> str:
+        return "run"
+
+    def description(self) -> str:
+        return (
+            "Dispatch a task to a ccagent worker that runs autonomously.\n\n"
+            "When a project context is loaded, the worker automatically gets the correct "
+            "working directory, remote target, and environment variables from the runtime config.\n"
+            "You do NOT need to specify cwd, remote, or env — they are derived from the active project.\n\n"
+            "IMPORTANT — async behavior:\n"
+            "- This tool returns immediately with a session ID. The worker runs in the background.\n"
+            "- You will receive a notification when the worker completes.\n"
+            "- Use wait_agent to block until completion if you need results before continuing.\n"
+        )
+
+    def parameters_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Task instruction for the worker agent.",
+                },
+            },
+            "required": ["task"],
+        }
+
+    async def execute(self, args: dict) -> ToolResult:
+        task = args.get("task", "")
+        if not task:
+            return ToolResult(output="Error: 'task' is required.", success=False)
+
+        # Get runtime config from active project context
+        runtime = None
+        plugctx = self._ctx._parent.plugctx
+        if plugctx:
+            runtime = plugctx.active_runtime()
+
+        if runtime and runtime.workspace:
+            workspace_abs = runtime.workspace
+            remote = runtime.remote or None
+            cwd = workspace_abs
+            env = self._build_env(runtime)
+        else:
+            cwd, _ = self._ctx._parent.effective_cwd()
+            remote = None
+            env = self._build_env(None)
+
+        try:
+            session_id, warning = await self._ctx.spawn(
+                agent_type="ccagent",
+                task=task,
+                remote=remote,
+                cwd=cwd,
+                single_turn=True,
+                env=env,
+            )
+            location = f" (remote: {remote})" if remote else ""
+            output = (
+                f"Worker launched successfully{location}.\n"
+                f"Session ID: {session_id}\n"
+                f"CWD: {cwd}\n"
+                f"Task: {task[:200]}\n"
+            )
+            if warning:
+                output += warning
+            return ToolResult(output=output)
+        except SpawnLimitError as e:
+            return ToolResult(output=f"Spawn blocked: {e}", success=False)
+        except Exception as e:
+            return ToolResult(output=f"Failed to launch worker: {e}", success=False)
+
+    @staticmethod
+    def _build_env(runtime) -> dict[str, str]:
+        """Collect env vars: ANTHROPIC from process env + runtime.env."""
+        env: dict[str, str] = {}
+        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
+            val = os.environ.get(key)
+            if val:
+                env[key] = val
+        if runtime and runtime.env:
+            env.update(runtime.env)
+        return env
 
 
 class LaunchAgentTool(Tool):

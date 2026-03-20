@@ -310,6 +310,12 @@ class RemoteDaemon:
             self._handle_cancel(msg)
         elif msg_type == "terminate":
             self._handle_terminate(msg)
+        elif msg_type == "file_read":
+            await self._handle_file_read(ws, msg)
+        elif msg_type == "file_glob":
+            await self._handle_file_glob(ws, msg)
+        elif msg_type == "file_grep":
+            await self._handle_file_grep(ws, msg)
         else:
             logger.warning("Unknown message type: %s", msg_type)
 
@@ -348,6 +354,11 @@ class RemoteDaemon:
         try:
             agent_config_data = msg.get("agent_config", {})
             agent_config = AgentConfig(**agent_config_data) if agent_config_data else AgentConfig()
+
+            # Pass runtime env from client if provided
+            env = msg.get("env")
+            if env:
+                agent_config.extra["_runtime_env"] = env
 
             session = self._runtime.create_session(
                 agent_type, agent_config, session_id=session_id,
@@ -425,6 +436,80 @@ class RemoteDaemon:
             logger.info("[DAEMON] Terminating session %s (client requested)", session_id)
             managed.handler.cancel_consumer()
             managed.session.interrupt()
+
+    # --- File operation RPCs (workspace:// reads) ---
+
+    async def _handle_file_read(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
+        """Read a file and return its content."""
+        from pathlib import Path
+
+        fpath = msg.get("path", "")
+        try:
+            content = Path(fpath).read_text(errors="replace")
+            if len(content) > 50000:
+                content = content[:50000] + "\n... (truncated)"
+            await ws.send_json({"type": "file_read_result", "content": content, "ok": True})
+        except Exception as e:
+            await ws.send_json({"type": "file_read_result", "ok": False, "error": str(e)})
+
+    async def _handle_file_glob(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
+        """Glob files in a directory."""
+        from pathlib import Path
+
+        base = msg.get("path", "")
+        pattern = msg.get("pattern", "")
+        try:
+            search_dir = Path(base)
+            if not search_dir.is_dir():
+                await ws.send_json({"type": "file_glob_result", "ok": False, "error": f"Directory not found: {base}"})
+                return
+            matches = sorted(str(p.relative_to(search_dir)) for p in search_dir.glob(pattern) if p.is_file())
+            if len(matches) > 500:
+                matches = matches[:500]
+            await ws.send_json({"type": "file_glob_result", "matches": matches, "ok": True})
+        except Exception as e:
+            await ws.send_json({"type": "file_glob_result", "ok": False, "error": str(e)})
+
+    async def _handle_file_grep(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
+        """Grep files for a regex pattern."""
+        import re
+        from pathlib import Path
+
+        base = msg.get("path", "")
+        pattern = msg.get("pattern", "")
+        file_glob = msg.get("glob", "")
+        max_results = 200
+        try:
+            regex = re.compile(pattern)
+            search_path = Path(base)
+            if not search_path.exists():
+                await ws.send_json({"type": "file_grep_result", "ok": False, "error": f"Path not found: {base}"})
+                return
+
+            if search_path.is_file():
+                files = [search_path]
+            else:
+                glob_pattern = file_glob if file_glob else "**/*"
+                files = sorted(p for p in search_path.glob(glob_pattern) if p.is_file())
+
+            results: list[str] = []
+            for fpath in files:
+                if len(results) >= max_results:
+                    break
+                try:
+                    text = fpath.read_text(errors="replace")
+                except Exception:
+                    continue
+                rel = str(fpath.relative_to(search_path)) if str(fpath).startswith(str(search_path)) else str(fpath)
+                for line_num, line in enumerate(text.splitlines(), 1):
+                    if regex.search(line):
+                        results.append(f"{rel}:{line_num}: {line.rstrip()}")
+                        if len(results) >= max_results:
+                            break
+
+            await ws.send_json({"type": "file_grep_result", "matches": results, "ok": True})
+        except Exception as e:
+            await ws.send_json({"type": "file_grep_result", "ok": False, "error": str(e)})
 
     # --- Session reaper ---
 

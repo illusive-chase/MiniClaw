@@ -114,7 +114,8 @@ class CCAgent:
         sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
         plugctx_prompt = config.extra.get("_plugctx_prompt", "")
         effective_cwd = config.extra.get("_effective_cwd") or self._cwd
-        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd)
+        runtime_env = config.extra.get("_runtime_env")
+        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd, env=runtime_env)
         logger.debug("[CC] Client ready: sdk_session_id=%s", sdk_session_id)
 
         reply_parts: list[str] = []
@@ -477,6 +478,7 @@ class CCAgent:
         client_key: str,
         extra_prompt: str = "",
         cwd: str | None = None,
+        env: dict[str, str] | None = None,
     ) -> ClaudeAgentOptions:
         opts: dict = {}
 
@@ -514,6 +516,10 @@ class CCAgent:
             opts["thinking"] = self._thinking
         if self._effort is not None:
             opts["effort"] = self._effort
+
+        # Inject runtime environment variables
+        if env:
+            opts["env"] = env
 
         return ClaudeAgentOptions(**opts)
 

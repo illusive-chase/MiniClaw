@@ -131,10 +131,14 @@ class NativeAgent:
         messages: list[ChatMessage] = []
         system_parts = [config.system_prompt or self._system_prompt]
 
-        # Apply effective cwd from session
-        effective_cwd = config.extra.get("_effective_cwd")
-        if effective_cwd:
-            self._tools.set_cwd(effective_cwd)
+        # Apply path context (includes cwd) or fall back to effective_cwd
+        path_ctx = config.extra.get("_path_ctx")
+        if path_ctx:
+            self._tools.set_path_context(path_ctx)
+        else:
+            effective_cwd = config.extra.get("_effective_cwd")
+            if effective_cwd:
+                self._tools.set_cwd(effective_cwd)
 
         # Add available tool names
         tool_names = self._tools.list_names()

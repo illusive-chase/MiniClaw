@@ -62,6 +62,7 @@ class RemoteSubAgentDriver(Channel):
         agent_config: dict[str, Any] | None = None,
         cwd: str | None = None,
         single_turn: bool = True,
+        env: dict[str, str] | None = None,
     ) -> None:
         self._session_id = session_id
         self._parent_session = parent_session
@@ -71,6 +72,7 @@ class RemoteSubAgentDriver(Channel):
         self._agent_config = agent_config
         self._cwd = cwd
         self._single_turn = single_turn
+        self._env = env
 
         self._status: str = "running"  # running | completed | failed | interrupted
         self._result: str | None = None
@@ -121,6 +123,7 @@ class RemoteSubAgentDriver(Channel):
                         spawn_msg = serialize_spawn(
                             self._session_id, self._agent_type, self._task, self._agent_config,
                             cwd=self._cwd,
+                            env=self._env,
                         )
                         await self._ws.send_json(spawn_msg)
 

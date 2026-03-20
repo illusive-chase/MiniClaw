@@ -3,12 +3,15 @@
 import re
 from pathlib import Path
 
-from .base import Tool, ToolResult
+from miniclaw.plugctx.vpath import CTX_SCHEME, WORKSPACE_SCHEME, detect_protocol, resolve_ctx, resolve_workspace
+
+from .base import Tool, ToolPathContext, ToolResult
 
 
 class GrepTool(Tool):
     def __init__(self, cwd: str = "."):
         self._cwd = Path(cwd)
+        self._path_ctx: ToolPathContext | None = None
 
     def name(self) -> str:
         return "grep"
@@ -17,6 +20,7 @@ class GrepTool(Tool):
         return (
             "Search file contents for a regex pattern. "
             "Returns matching lines with file paths and line numbers. "
+            "Supports ctx:// and workspace:// paths. "
             "Optionally filter by file glob (e.g. '*.py')."
         )
 
@@ -30,7 +34,7 @@ class GrepTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory to search in (relative to workspace or absolute). Defaults to workspace root.",
+                    "description": "File or directory to search in (relative, absolute, ctx://, or workspace://). Defaults to workspace root.",
                 },
                 "glob": {
                     "type": "string",
@@ -56,10 +60,42 @@ class GrepTool(Tool):
             return ToolResult(output=f"Invalid regex: {e}", success=False)
 
         target = args.get("path", "")
+
+        # Virtual protocol resolution
         if target:
-            search_path = Path(target)
-            if not search_path.is_absolute():
-                search_path = self._cwd / search_path
+            protocol = detect_protocol(target)
+            if protocol is not None:
+                scheme, relative = protocol
+                if scheme == CTX_SCHEME:
+                    if self._path_ctx and self._path_ctx.ctx_root:
+                        search_path = resolve_ctx(relative, self._path_ctx.ctx_root)
+                    else:
+                        return ToolResult(output="ctx:// paths require an active plugctx root.", success=False)
+                elif scheme == WORKSPACE_SCHEME:
+                    if self._path_ctx and self._path_ctx.workspace:
+                        if self._path_ctx.remote and self._path_ctx.remote_reader:
+                            abs_path = resolve_workspace(relative, self._path_ctx.workspace)
+                            file_glob = args.get("glob", "")
+                            try:
+                                matches = await self._path_ctx.remote_reader.grep(abs_path, pattern, file_glob)
+                                if not matches:
+                                    return ToolResult(output="No matches found.")
+                                output = "\n".join(matches)
+                                if len(matches) >= 200:
+                                    output += "\n... (truncated at 200 matches)"
+                                return ToolResult(output=output)
+                            except Exception as e:
+                                return ToolResult(output=f"Remote grep error: {e}", success=False)
+                        else:
+                            search_path = Path(resolve_workspace(relative, self._path_ctx.workspace))
+                    else:
+                        return ToolResult(output="workspace:// paths require an active project context with a workspace.", success=False)
+                else:
+                    return ToolResult(output=f"Unknown protocol: {scheme}", success=False)
+            else:
+                search_path = Path(target)
+                if not search_path.is_absolute():
+                    search_path = self._cwd / search_path
         else:
             search_path = self._cwd
 

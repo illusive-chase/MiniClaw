@@ -178,6 +178,7 @@ def serialize_spawn(
     task: str,
     agent_config: dict[str, Any] | None = None,
     cwd: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Serialize a spawn request for the wire."""
     msg: dict[str, Any] = {
@@ -190,6 +191,8 @@ def serialize_spawn(
         msg["agent_config"] = agent_config
     if cwd is not None:
         msg["cwd"] = cwd
+    if env is not None:
+        msg["env"] = env
     return msg
 
 
@@ -212,3 +215,22 @@ def serialize_terminate(session_id: str) -> dict[str, Any]:
 
 def serialize_ping() -> dict[str, Any]:
     return {"type": "ping"}
+
+
+# ---------------------------------------------------------------------------
+# File operation RPC messages (Client -> Server for workspace:// reads)
+# ---------------------------------------------------------------------------
+
+def serialize_file_read(path: str) -> dict[str, Any]:
+    return {"type": "file_read", "path": path}
+
+
+def serialize_file_glob(path: str, pattern: str) -> dict[str, Any]:
+    return {"type": "file_glob", "path": path, "pattern": pattern}
+
+
+def serialize_file_grep(path: str, pattern: str, glob: str = "") -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": "file_grep", "path": path, "pattern": pattern}
+    if glob:
+        msg["glob"] = glob
+    return msg

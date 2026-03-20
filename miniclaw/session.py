@@ -109,6 +109,7 @@ class Session:
         self._current_token: CancellationToken | None = None
         self.status: str = "active"  # active | paused | archived
         self.cwd_override: str | None = None  # Set via /cd command
+        self.is_subagent: bool = False  # True for child sessions spawned by RuntimeContext
 
         logger.debug(
             "[SESSION %s] init: status=%s",
@@ -195,6 +196,21 @@ class Session:
                     # Inject effective cwd for tools
                     cwd, _ = self.effective_cwd()
                     self.agent_config.extra["_effective_cwd"] = cwd
+
+                    # Build path context for virtual path resolution
+                    from miniclaw.tools.base import ToolPathContext
+                    from pathlib import Path as _Path
+
+                    path_ctx = ToolPathContext(cwd=_Path(cwd))
+                    if self.plugctx is not None:
+                        path_ctx.ctx_root = self.plugctx.ctx_root
+                        runtime = self.plugctx.active_runtime()
+                        if runtime:
+                            path_ctx.workspace = runtime.workspace
+                            path_ctx.remote = runtime.remote or None
+                            if hasattr(self, '_remote_reader'):
+                                path_ctx.remote_reader = self._remote_reader
+                    self.agent_config.extra["_path_ctx"] = path_ctx
 
                     async for event in self.agent.process(
                         pending_text,

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from miniclaw.plugctx.vpath import detect_protocol
+
 from .base import Tool, ToolResult
 
 
@@ -43,6 +45,15 @@ class FileEditTool(Tool):
             return ToolResult(output="No path provided", success=False)
         if not old_string:
             return ToolResult(output="No old_string provided", success=False)
+
+        # Block virtual protocols
+        protocol = detect_protocol(path_str)
+        if protocol is not None:
+            return ToolResult(
+                output=f"Cannot edit {protocol[0]} paths. Write operations are restricted to the planspace (current directory).",
+                success=False,
+            )
+
         path = Path(path_str)
         if not path.is_absolute():
             path = self._cwd / path

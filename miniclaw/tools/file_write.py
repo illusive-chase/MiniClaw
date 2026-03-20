@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from miniclaw.plugctx.vpath import detect_protocol
+
 from .base import Tool, ToolResult
 
 
@@ -36,6 +38,15 @@ class FileWriteTool(Tool):
         content = args.get("content", "")
         if not path_str:
             return ToolResult(output="No path provided", success=False)
+
+        # Block virtual protocols
+        protocol = detect_protocol(path_str)
+        if protocol is not None:
+            return ToolResult(
+                output=f"Cannot write to {protocol[0]} paths. Write operations are restricted to the planspace (current directory).",
+                success=False,
+            )
+
         path = Path(path_str)
         if not path.is_absolute():
             path = self._cwd / path

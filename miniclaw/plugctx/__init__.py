@@ -13,6 +13,7 @@ import yaml
 from miniclaw.plugctx.loader import (
     ContextEntry,
     ContextManifest,
+    RuntimeConfig,
     discover_all_contexts,
     dotted_to_fs_path,
     list_child_contexts,
@@ -25,6 +26,7 @@ __all__ = [
     "PlugCtxManager",
     "ContextEntry",
     "ContextManifest",
+    "RuntimeConfig",
     "CircularDependencyError",
 ]
 
@@ -83,7 +85,7 @@ class PlugCtxManager:
                 "tags": [],
             }
             if ctx_type == "project" and workspace:
-                manifest_data["workspace"] = workspace
+                manifest_data["runtime"] = {"workspace": workspace}
             (fs_path / "manifest.yaml").write_text(
                 yaml.dump(manifest_data, default_flow_style=False, sort_keys=False),
                 encoding="utf-8",
@@ -110,8 +112,12 @@ class PlugCtxManager:
         except Exception as e:
             return {"path": str(fs_path), "created": False, "error": str(e)}
 
-    def load(self, dotted_path: str) -> dict:
+    def load(self, dotted_path: str, allow_project: bool = True) -> dict:
         """Load a context and its dependencies.
+
+        Args:
+            dotted_path: Dotted path to the context to load.
+            allow_project: If False, reject project-type contexts (used for ccagent subagents).
 
         Returns: {loaded: [...], already_loaded: [...], failed: [...],
                   total_tokens: int, children: [...], warnings: [...]}
@@ -143,6 +149,16 @@ class PlugCtxManager:
         try:
             target_entry = load_context_entry(self._ctx_root, dotted_path)
             if target_entry.manifest.type == "project":
+                if not allow_project:
+                    return {
+                        "loaded": [],
+                        "already_loaded": [],
+                        "failed": [],
+                        "error": "Project-type contexts cannot be loaded in ccagent sessions.",
+                        "total_tokens": self._registry.total_tokens(),
+                        "children": [],
+                        "warnings": [],
+                    }
                 existing_project = self._registry.active_project()
                 if existing_project is not None and existing_project.path != dotted_path:
                     warnings.append(
@@ -275,12 +291,23 @@ class PlugCtxManager:
 
     # --- Agent integration ---
 
+    def active_runtime(self) -> RuntimeConfig | None:
+        """Return the RuntimeConfig of the active project context, or None."""
+        project = self._registry.active_project()
+        if project is not None and project.manifest.runtime is not None:
+            return project.manifest.runtime
+        return None
+
     def active_project_cwd(self) -> str | None:
         """Return the filesystem directory of the active project-type context, or None."""
         project = self._registry.active_project()
         if project is not None:
             return str(dotted_to_fs_path(self._ctx_root, project.path))
         return None
+
+    @property
+    def ctx_root(self) -> Path:
+        return self._ctx_root
 
     def render_prompt_section(self) -> str:
         """Render all loaded contexts as a system prompt section."""
