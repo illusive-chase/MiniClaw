@@ -48,7 +48,7 @@ from miniclaw.types import (
     TextDelta,
     UsageEvent,
 )
-from miniclaw.usage import UsageStats
+from miniclaw.usage import TokenUsage, UsageStats
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ class CCAgent:
         max_turns: int | None = None,
         thinking: dict | None = None,
         effort: str | None = None,
+        context_window: int = 0,
     ) -> None:
         self._system_prompt = system_prompt
         self._default_model = default_model
@@ -80,6 +81,7 @@ class CCAgent:
         self._max_turns = max_turns
         self._thinking = thinking
         self._effort = effort
+        self._context_window = context_window
 
         self._output_queues: dict[str, asyncio.Queue] = {}
         self._usage: dict[str, UsageStats] = {}
@@ -122,6 +124,8 @@ class CCAgent:
         new_session_id: str | None = self._sdk_session_id
         pending_tools: dict[str, ActivityEvent] = {}
         turn_usage = UsageStats()  # per-message usage (yielded to channel)
+        last_token_usage: TokenUsage | None = None
+        last_context_tokens: int = 0
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
 
@@ -292,8 +296,24 @@ class CCAgent:
                     self._usage.setdefault(key, UsageStats()).accumulate(message)
                     turn_usage.accumulate(message)
 
+                    # Extract per-call TokenUsage for rich display
+                    if message.usage:
+                        u = message.usage
+                        last_token_usage = TokenUsage(
+                            input_tokens=u.get("input_tokens", 0),
+                            output_tokens=u.get("output_tokens", 0),
+                            cache_read_tokens=u.get("cache_read_input_tokens", 0),
+                            cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
+                        )
+                        last_context_tokens = last_token_usage.input_tokens + last_token_usage.cache_read_tokens
+
                     # Intermediate usage update — lets the channel show running token count
-                    yield UsageEvent(usage=turn_usage.copy(), final=False)
+                    yield UsageEvent(
+                        usage=turn_usage.copy(), final=False,
+                        context_tokens=last_context_tokens,
+                        context_window=self._context_window or None,
+                        last_usage=last_token_usage,
+                    )
 
                 else:
                     logger.warning(
@@ -343,7 +363,12 @@ class CCAgent:
             len(reply), len(updated_history),
         )
 
-        yield UsageEvent(usage=turn_usage)
+        yield UsageEvent(
+            usage=turn_usage,
+            context_tokens=last_context_tokens,
+            context_window=self._context_window or None,
+            last_usage=last_token_usage,
+        )
         yield HistoryUpdate(history=updated_history)
 
     async def reset(self) -> None:

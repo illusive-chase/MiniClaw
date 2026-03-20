@@ -68,6 +68,7 @@ def main() -> None:
             max_turns=cc_cfg.get("max_turns"),
             thinking=cc_cfg.get("thinking"),
             effort=cc_cfg.get("effort"),
+            context_window=config.get("provider", {}).get("context_window", 0),
         )
 
     # NativeAgent factory (for sub-agents or other use)
