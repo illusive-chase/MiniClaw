@@ -5,6 +5,12 @@ provider:
   model: "claude-opus-4-6"
   temperature: 0.7
   context_window: 200000
+  quota_factor: 3
+  pricing:
+    read: 5
+    write: 25
+    cache_read: 0.5
+    cache_write: 6.25
 
 channel:
   type: "cli"

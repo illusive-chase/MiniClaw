@@ -70,3 +70,13 @@ class UsageStats:
             num_turns=self.num_turns,
             num_requests=self.num_requests,
         )
+
+
+def compute_token_cost(usage: TokenUsage, pricing: dict) -> float:
+    """Compute cost for a single LLM call based on pricing (per M tokens)."""
+    return (
+        usage.input_tokens * pricing.get("read", 0)
+        + usage.output_tokens * pricing.get("write", 0)
+        + usage.cache_read_tokens * pricing.get("cache_read", 0)
+        + usage.cache_creation_tokens * pricing.get("cache_write", 0)
+    ) / 1_000_000

@@ -21,7 +21,7 @@ from miniclaw.log import truncate
 from miniclaw.providers.base import ChatMessage, ChatResponse, Provider
 from miniclaw.tools import ToolRegistry
 from miniclaw.types import AgentEvent, HistoryUpdate, TextDelta, UsageEvent
-from miniclaw.usage import UsageStats
+from miniclaw.usage import TokenUsage, UsageStats, compute_token_cost
 
 # Tool spec injected into the LLM so it can ask the user questions mid-turn.
 _ASK_USER_TOOL_SPEC = {
@@ -92,6 +92,8 @@ class NativeAgent:
         default_model: str = "",
         temperature: float = 0.7,
         context_window: int = 0,
+        pricing: dict | None = None,
+        quota_factor: float = 1.0,
     ) -> None:
         self._provider = provider
         self._tools = tool_registry
@@ -99,6 +101,8 @@ class NativeAgent:
         self._default_model = default_model
         self._temperature = temperature
         self._context_window = context_window
+        self._pricing = pricing
+        self._quota_factor = quota_factor
         self._usage: dict[str, UsageStats] = {}
 
     # --- AgentProtocol ---
@@ -180,6 +184,8 @@ class NativeAgent:
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
         last_input_tokens = 0  # input_tokens from most recent LLM call (context size)
+        last_cache_read_tokens = 0  # cache_read_tokens from most recent LLM call
+        last_token_usage: TokenUsage | None = None  # raw TokenUsage from last LLM call
 
         # Tool loop
         for iteration in range(max_iterations):
@@ -224,12 +230,20 @@ class NativeAgent:
             self._accumulate_usage(response, elapsed_ms)
             turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
             last_input_tokens = response.usage.input_tokens if response.usage else 0
+            last_cache_read_tokens = response.usage.cache_read_tokens if response.usage else 0
+            last_token_usage = response.usage
+
+            # Accumulate cost into turn_usage
+            if response.usage and self._pricing:
+                cost = compute_token_cost(response.usage, self._pricing) * self._quota_factor
+                turn_usage.total_cost_usd += cost
 
             # Intermediate usage update — lets the channel show running token count
             yield UsageEvent(
                 usage=turn_usage.copy(), final=False,
-                context_tokens=last_input_tokens,
+                context_tokens=last_input_tokens + last_cache_read_tokens,
                 context_window=self._context_window or None,
+                last_usage=last_token_usage,
             )
 
             logger.info(
@@ -363,8 +377,9 @@ class NativeAgent:
 
         yield UsageEvent(
             usage=turn_usage,
-            context_tokens=last_input_tokens,
+            context_tokens=last_input_tokens + last_cache_read_tokens,
             context_window=self._context_window or None,
+            last_usage=last_token_usage,
         )
         yield HistoryUpdate(history=updated_history)
 

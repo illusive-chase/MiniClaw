@@ -145,9 +145,21 @@ class CLIChannel(Channel):
 
     @staticmethod
     def _render_usage(event: UsageEvent, spinner: bool = False) -> Text | Table:
-        """Build a Rich renderable for the spinner text during thinking."""
+        """Build a Rich renderable for the usage footer / spinner text."""
         u = event.usage
-        total = u.input_tokens + u.output_tokens
+        fk = CLIChannel._fmt_k
+        last = event.last_usage
+
+        # Build the bracketed info segment
+        if last is not None:
+            parts = [f"Total: {u.total_cost_usd:.2f}"]
+            parts.append(f"I/O: {fk(last.input_tokens)}/{fk(last.output_tokens)}")
+            if last.cache_read_tokens or last.cache_creation_tokens:
+                parts.append(f"Cache: {fk(last.cache_read_tokens)}/{fk(last.cache_creation_tokens)}")
+            info_str = "[" + "; ".join(parts) + "]"
+        else:
+            total = u.input_tokens + u.output_tokens
+            info_str = f"[Total: {total:,}]"
 
         if (
             event.context_tokens is not None
@@ -157,32 +169,32 @@ class CLIChannel(Channel):
             pct = min(100, event.context_tokens * 100 // event.context_window)
             grid = Table.grid(padding=(0, 1))
             rows = [
-                Text(f"[Total: {total:,}]  Context ({pct}%):", style="bold magenta"),
+                Text(f"{info_str}  Context ({pct}%):", style="bold magenta"),
                 ProgressBar(
                     total=event.context_window,
                     completed=event.context_tokens,
                     width=20,
                 ),
                 Text(
-                    f"({CLIChannel._fmt_k(event.context_tokens)}"
-                    f"/{CLIChannel._fmt_k(event.context_window)})",
+                    f"({fk(event.context_tokens)}"
+                    f"/{fk(event.context_window)})",
                     style="light_steel_blue1",
                 ),
             ]
             if spinner:
                 grid.add_column()  # Thinking
                 rows.insert(0, Text("Thinking... ", style="bold magenta"))
-            grid.add_column()  # Total + Context label
+            grid.add_column()  # Info + Context label
             grid.add_column()  # Progress bar
             grid.add_column()  # (Xk/Yk)
             grid.add_row(*rows)
             return grid
         else:
-            info = Text(f"[Total: {total:,} = {u.input_tokens:,} + {u.output_tokens:,}] ", style="bold magenta")
+            info = Text(info_str + " ", style="bold magenta")
             if spinner:
                 grid = Table.grid(padding=(0, 1))
                 grid.add_column()  # Thinking
-                grid.add_column()  # Total + Context label
+                grid.add_column()  # Info
                 grid.add_row(Text("Thinking... ", style="bold magenta"), info)
                 return grid
             return info

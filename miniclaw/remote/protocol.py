@@ -18,7 +18,7 @@ from miniclaw.interactions import (
     InteractionType,
 )
 from miniclaw.types import AgentEvent, InterruptedEvent, TextDelta, UsageEvent
-from miniclaw.usage import UsageStats
+from miniclaw.usage import TokenUsage, UsageStats
 
 # ---------------------------------------------------------------------------
 # Server -> Client: serialize AgentEvent for the wire
@@ -67,7 +67,7 @@ def serialize_event(session_id: str, event: AgentEvent) -> dict[str, Any] | None
 
     if isinstance(event, UsageEvent):
         u = event.usage
-        return {
+        msg: dict[str, Any] = {
             "type": "usage",
             "session_id": session_id,
             "input_tokens": u.input_tokens,
@@ -76,7 +76,20 @@ def serialize_event(session_id: str, event: AgentEvent) -> dict[str, Any] | None
             "cache_creation_tokens": u.cache_creation_tokens,
             "total_cost_usd": u.total_cost_usd,
             "total_duration_ms": u.total_duration_ms,
+            "final": event.final,
         }
+        if event.context_tokens is not None:
+            msg["context_tokens"] = event.context_tokens
+        if event.context_window is not None:
+            msg["context_window"] = event.context_window
+        if event.last_usage is not None:
+            msg["last_usage"] = {
+                "input_tokens": event.last_usage.input_tokens,
+                "output_tokens": event.last_usage.output_tokens,
+                "cache_read_tokens": event.last_usage.cache_read_tokens,
+                "cache_creation_tokens": event.last_usage.cache_creation_tokens,
+            }
+        return msg
 
     # HistoryUpdate and SessionControl are not serialized
     return None
@@ -120,6 +133,17 @@ def deserialize_event(msg: dict[str, Any]) -> AgentEvent | None:
         return InterruptedEvent()
 
     if msg_type == "usage":
+        last_usage_raw = msg.get("last_usage")
+        last_usage = (
+            TokenUsage(
+                input_tokens=last_usage_raw.get("input_tokens", 0),
+                output_tokens=last_usage_raw.get("output_tokens", 0),
+                cache_read_tokens=last_usage_raw.get("cache_read_tokens", 0),
+                cache_creation_tokens=last_usage_raw.get("cache_creation_tokens", 0),
+            )
+            if last_usage_raw
+            else None
+        )
         return UsageEvent(
             usage=UsageStats(
                 input_tokens=msg.get("input_tokens", 0),
@@ -128,7 +152,11 @@ def deserialize_event(msg: dict[str, Any]) -> AgentEvent | None:
                 cache_creation_tokens=msg.get("cache_creation_tokens", 0),
                 total_cost_usd=msg.get("total_cost_usd", 0.0),
                 total_duration_ms=msg.get("total_duration_ms", 0),
-            )
+            ),
+            final=msg.get("final", True),
+            context_tokens=msg.get("context_tokens"),
+            context_window=msg.get("context_window"),
+            last_usage=last_usage,
         )
 
     return None

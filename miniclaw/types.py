@@ -8,7 +8,7 @@ from typing import Any, Union
 from miniclaw.activity import ActivityEvent
 from miniclaw.interactions import InteractionRequest
 from miniclaw.providers.base import ChatMessage
-from miniclaw.usage import UsageStats
+from miniclaw.usage import TokenUsage, UsageStats
 
 
 @dataclass
@@ -56,6 +56,7 @@ class UsageEvent:
     final: bool = True
     context_tokens: int | None = None
     context_window: int | None = None
+    last_usage: TokenUsage | None = None
 
 
 # Union of all event types yielded by agents.

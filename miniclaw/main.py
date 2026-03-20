@@ -57,6 +57,8 @@ def main() -> None:
             default_model=cfg.model or agent_config.model,
             temperature=cfg.temperature or agent_config.temperature,
             context_window=config["provider"].get("context_window", 0),
+            pricing=config["provider"].get("pricing"),
+            quota_factor=config["provider"].get("quota_factor", 1.0),
         )
 
     # CCAgent factory (if ccagent config is available)

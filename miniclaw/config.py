@@ -45,6 +45,8 @@ DEFAULT_CONFIG = {
         "temperature": 0.7,
         "max_tokens": 8192,
         "context_window": 0,
+        "pricing": {"read": 0, "write": 0, "cache_read": 0, "cache_write": 0},
+        "quota_factor": 1.0,
     },
     "channel": {
         "type": "cli",
