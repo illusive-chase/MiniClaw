@@ -123,6 +123,12 @@ class SlashCommandCompleter(Completer):
                 arg_type=ArgType.PATH,
             ),
             CommandSpec(
+                names=["remote-check"],
+                meta="check remote daemon health",
+                arg_type=ArgType.DYNAMIC,
+                dynamic_fn="_remote_completions",
+            ),
+            CommandSpec(
                 names=["plugctx"],
                 meta="manage contexts",
                 arg_type=ArgType.SUBCOMMAND,
@@ -174,6 +180,14 @@ class SlashCommandCompleter(Completer):
                 0, Completion(current, start_position=-len(prefix), display_meta="current")
             )
         return results
+
+    def _remote_completions(self, prefix: str) -> list[Completion]:
+        remotes = getattr(self.runtime, "_remotes_config", None) or {}
+        return [
+            Completion(name, start_position=-len(prefix))
+            for name in remotes
+            if name.startswith(prefix)
+        ]
 
     def _plugctx_all_contexts(self, prefix: str) -> list[Completion]:
         try:

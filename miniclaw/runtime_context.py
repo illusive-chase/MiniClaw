@@ -140,7 +140,7 @@ class RuntimeContext:
         from miniclaw.remote.remote_driver import RemoteSubAgentDriver
         from miniclaw.session import generate_session_id
 
-        ws_url = await self._resolve_remote_url(remote)
+        ws_url = await self.resolve_remote_url(remote)
         session_id = generate_session_id()
 
         logger.debug(
@@ -168,7 +168,7 @@ class RuntimeContext:
         )
         return session_id
 
-    async def _resolve_remote_url(self, remote: str) -> str:
+    async def resolve_remote_url(self, remote: str) -> str:
         """Resolve a remote target to a WebSocket URL.
 
         If ``remote`` starts with ``ws://`` or ``wss://``, use it directly.

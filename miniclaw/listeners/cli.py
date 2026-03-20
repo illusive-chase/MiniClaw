@@ -199,6 +199,7 @@ class CLIListener(Listener):
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
                 "  /plugctx <cmd>    Manage loaded contexts (init/load/unload/list/status/info)\n"
+                "  /remote-check <n> Check remote daemon health\n"
                 "  /pwd              Show current working directory\n"
                 "  /cd [path]        Change working directory (no args = reset)\n"
                 "  /quit, /exit, /q  Exit the REPL",
@@ -367,8 +368,95 @@ class CLIListener(Listener):
                     session.cwd_override = resolved
                     console.print(f"[dim]cwd: {resolved}[/dim]")
 
+        elif cmd == "remote-check":
+            await self._handle_remote_check(args, runtime, console)
+
         else:
             console.print(f"[red]Unknown command: /{cmd}. Type /help for available commands.[/red]")
+
+    async def _handle_remote_check(
+        self,
+        args: str,
+        runtime: Runtime,
+        console: Console,
+    ) -> None:
+        """Connect to a remote daemon and run a healthcheck."""
+        import json
+
+        import aiohttp
+
+        remote = args.strip()
+        if not remote:
+            console.print("[red]Usage: /remote-check <remote_name>[/red]")
+            return
+
+        # Resolve remote name to ws:// URL
+        try:
+            ws_url = await self._resolve_remote_url(remote, runtime)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            return
+
+        console.print(f"[dim]Connecting to {remote} ({ws_url})...[/dim]")
+
+        try:
+            async with aiohttp.ClientSession() as http:
+                async with http.ws_connect(ws_url, timeout=10) as ws:
+                    await ws.send_json({"type": "healthcheck"})
+                    async for ws_msg in ws:
+                        if ws_msg.type == aiohttp.WSMsgType.TEXT:
+                            data = json.loads(ws_msg.data)
+                            if data.get("type") == "healthcheck_result":
+                                if data.get("ok"):
+                                    console.print(
+                                        f"[green]OK[/green] — {remote} claude CLI is working.\n"
+                                        f"[dim]  output: {data.get('output', '')[:200]}[/dim]"
+                                    )
+                                else:
+                                    console.print(
+                                        f"[red]FAIL[/red] — {remote} claude CLI check failed.\n"
+                                        f"[red]  error: {data.get('error', 'unknown')}[/red]"
+                                    )
+                                break
+                        elif ws_msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                            console.print(f"[red]WebSocket closed unexpectedly.[/red]")
+                            break
+        except asyncio.TimeoutError:
+            console.print(f"[red]Connection to {remote} timed out.[/red]")
+        except Exception as e:
+            console.print(f"[red]Failed to connect to {remote}: {e}[/red]")
+
+    async def _resolve_remote_url(self, remote: str, runtime: Runtime) -> str:
+        """Resolve a remote name to a WebSocket URL."""
+        if remote.startswith("ws://") or remote.startswith("wss://"):
+            return remote
+
+        remotes = getattr(runtime, "_remotes_config", None) or {}
+        entry = remotes.get(remote)
+        if not entry:
+            raise ValueError(
+                f"Unknown remote '{remote}'. Configure it under "
+                f"'remotes' in config.yaml or pass a ws:// URL directly."
+            )
+
+        if isinstance(entry, dict):
+            from miniclaw.remote.tunnel import TunnelError
+
+            ssh_host = entry.get("ssh_host")
+            if not ssh_host:
+                raise ValueError(
+                    f"Remote '{remote}' dict config missing 'ssh_host'."
+                )
+            tunnel_mgr = runtime.tunnel_manager
+            try:
+                tunnel = await tunnel_mgr.get_or_create(remote, entry)
+            except TunnelError as exc:
+                raise ValueError(
+                    f"Failed to establish SSH tunnel for remote '{remote}': {exc}"
+                ) from exc
+            return tunnel.ws_url
+
+        return entry
 
     async def _handle_plugctx(
         self,

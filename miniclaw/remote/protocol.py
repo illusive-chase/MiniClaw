@@ -2,9 +2,9 @@
 
 JSON messages over WebSocket, multiplexed by session_id.
 
-Client -> Server: spawn, interaction_response, send_message, cancel, terminate, ping
+Client -> Server: spawn, interaction_response, send_message, cancel, terminate, ping, healthcheck
 Server -> Client: spawn_ack, text_delta, activity, interaction_request,
-                  interrupted, usage, turn_complete, session_error, pong
+                  interrupted, usage, turn_complete, session_error, pong, healthcheck_result
 """
 
 from __future__ import annotations
@@ -243,6 +243,10 @@ def serialize_terminate(session_id: str) -> dict[str, Any]:
 
 def serialize_ping() -> dict[str, Any]:
     return {"type": "ping"}
+
+
+def serialize_healthcheck() -> dict[str, Any]:
+    return {"type": "healthcheck"}
 
 
 # ---------------------------------------------------------------------------

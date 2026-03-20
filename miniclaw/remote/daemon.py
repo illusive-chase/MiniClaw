@@ -300,7 +300,9 @@ class RemoteDaemon:
             await ws.send_json({"type": "pong"})
             return
 
-        if msg_type == "spawn":
+        if msg_type == "healthcheck":
+            await self._handle_healthcheck(ws, msg)
+        elif msg_type == "spawn":
             await self._handle_spawn(ws, msg)
         elif msg_type == "interaction_response":
             self._handle_interaction_response(msg)
@@ -318,6 +320,36 @@ class RemoteDaemon:
             await self._handle_file_grep(ws, msg)
         else:
             logger.warning("Unknown message type: %s", msg_type)
+
+    async def _handle_healthcheck(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
+        """Run `claude -p 'hi'` locally and report success/failure."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "claude", "-p", "hi",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+            await ws.send_json({
+                "type": "healthcheck_result",
+                "ok": proc.returncode == 0,
+                "output": stdout.decode(errors="replace").strip(),
+                "error": stderr.decode(errors="replace").strip(),
+            })
+        except asyncio.TimeoutError:
+            await ws.send_json({
+                "type": "healthcheck_result",
+                "ok": False,
+                "output": "",
+                "error": "healthcheck timed out after 30s",
+            })
+        except Exception as e:
+            await ws.send_json({
+                "type": "healthcheck_result",
+                "ok": False,
+                "output": "",
+                "error": str(e),
+            })
 
     async def _handle_spawn(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
         """Handle a spawn request — create or re-attach a session."""

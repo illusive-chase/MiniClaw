@@ -111,6 +111,10 @@ class Session:
         self.cwd_override: str | None = None  # Set via /cd command
         self.is_subagent: bool = False  # True for child sessions spawned by RuntimeContext
 
+        # RemoteReader lifecycle (lazily created by _ensure_remote_reader)
+        self._remote_reader: Any = None
+        self._remote_reader_target: str | None = None
+
         logger.debug(
             "[SESSION %s] init: status=%s",
             self.id, self.status,
@@ -208,8 +212,9 @@ class Session:
                         if runtime:
                             path_ctx.workspace = runtime.workspace
                             path_ctx.remote = runtime.remote or None
-                            if hasattr(self, '_remote_reader'):
-                                path_ctx.remote_reader = self._remote_reader
+                    # Lazily create / swap RemoteReader for the active remote
+                    await self._ensure_remote_reader(path_ctx.remote)
+                    path_ctx.remote_reader = self._remote_reader
                     self.agent_config.extra["_path_ctx"] = path_ctx
 
                     async for event in self.agent.process(
@@ -313,7 +318,7 @@ class Session:
                     )
             self._current_token = None
 
-    # --- Sub-agent message formatting ---
+    # --- CWD and remote reader ---
 
     def effective_cwd(self) -> tuple[str, str]:
         """Return (effective_cwd_path, source_label)."""
@@ -324,6 +329,35 @@ class Session:
             if project_cwd:
                 return project_cwd, "project context"
         return os.getcwd(), "default"
+
+    async def _ensure_remote_reader(self, remote: str | None) -> None:
+        """Lazily create or swap the RemoteReader for the active remote target."""
+        if remote == self._remote_reader_target:
+            return  # already connected to the correct target
+
+        # Close stale reader (target changed or unloaded)
+        if self._remote_reader is not None:
+            try:
+                await self._remote_reader.close()
+            except Exception:
+                logger.warning("Failed to close RemoteReader", exc_info=True)
+            self._remote_reader = None
+            self._remote_reader_target = None
+
+        if remote is None:
+            return  # no remote — nothing to connect
+
+        # Resolve remote name → ws:// URL via RuntimeContext (reuses SSH tunnels)
+        from miniclaw.remote.remote_reader import RemoteReader
+
+        ws_url = await self.runtime_context.resolve_remote_url(remote)
+        reader = RemoteReader()
+        await reader.connect(ws_url)
+        self._remote_reader = reader
+        self._remote_reader_target = remote
+        logger.info("[SESSION %s] RemoteReader connected: remote=%s", self.id, remote)
+
+    # --- Sub-agent message formatting ---
 
     @staticmethod
     def _format_sub_agent_message(metadata: dict) -> str:
