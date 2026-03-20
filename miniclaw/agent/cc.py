@@ -324,8 +324,8 @@ class CCAgent:
                     # Intermediate usage update — lets the channel show running token count
                     yield UsageEvent(
                         usage=turn_usage.copy(), final=False,
-                        context_tokens=last_context_tokens,
-                        context_window=self._context_window or None,
+                        context_tokens=None,
+                        context_window=None,
                         last_usage=last_token_usage,
                     )
 
