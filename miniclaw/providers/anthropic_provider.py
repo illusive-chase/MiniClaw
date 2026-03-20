@@ -55,14 +55,22 @@ class AnthropicProvider(Provider):
                         })
                 api_msgs.append({"role": "assistant", "content": content or msg.content or ""})
             elif msg.role == "tool":
-                api_msgs.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.tool_call_id,
-                        "content": msg.content or "",
-                    }],
-                })
+                tool_result_block = {
+                    "type": "tool_result",
+                    "tool_use_id": msg.tool_call_id,
+                    "content": msg.content or "",
+                }
+                # Merge into previous user message if it already contains tool_results
+                if (api_msgs and api_msgs[-1]["role"] == "user"
+                        and isinstance(api_msgs[-1]["content"], list)
+                        and api_msgs[-1]["content"]
+                        and api_msgs[-1]["content"][-1].get("type") == "tool_result"):
+                    api_msgs[-1]["content"].append(tool_result_block)
+                else:
+                    api_msgs.append({
+                        "role": "user",
+                        "content": [tool_result_block],
+                    })
             else:
                 api_msgs.append({"role": msg.role, "content": msg.content or ""})
 

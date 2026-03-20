@@ -290,9 +290,6 @@ class CCAgent:
                                 had_nontext = True
 
                 elif isinstance(message, ResultMessage):
-                    logger.debug(
-                        "[CC] ResultMessage: usage available",
-                    )
                     self._usage.setdefault(key, UsageStats()).accumulate(message)
                     turn_usage.accumulate(message)
 
@@ -310,6 +307,19 @@ class CCAgent:
                             last_token_usage.cache_read_tokens +
                             last_token_usage.cache_creation_tokens
                         )
+
+                    logger.info(
+                        "[CC] ResultMessage: duration_ms=%d, api_ms=%d, "
+                        "input=%d, output=%d, cache_read=%d, cache_write=%d, "
+                        "num_turns=%d, cost=$%.4f",
+                        message.duration_ms, message.duration_api_ms,
+                        last_token_usage.input_tokens if last_token_usage else 0,
+                        last_token_usage.output_tokens if last_token_usage else 0,
+                        last_token_usage.cache_read_tokens if last_token_usage else 0,
+                        last_token_usage.cache_creation_tokens if last_token_usage else 0,
+                        message.num_turns,
+                        message.total_cost_usd or 0.0,
+                    )
 
                     # Intermediate usage update — lets the channel show running token count
                     yield UsageEvent(
