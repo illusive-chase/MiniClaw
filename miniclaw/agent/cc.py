@@ -305,7 +305,11 @@ class CCAgent:
                             cache_read_tokens=u.get("cache_read_input_tokens", 0),
                             cache_creation_tokens=u.get("cache_creation_input_tokens", 0),
                         )
-                        last_context_tokens = last_token_usage.input_tokens + last_token_usage.cache_read_tokens
+                        last_context_tokens = (
+                            last_token_usage.input_tokens +
+                            last_token_usage.cache_read_tokens +
+                            last_token_usage.cache_creation_tokens
+                        )
 
                     # Intermediate usage update — lets the channel show running token count
                     yield UsageEvent(

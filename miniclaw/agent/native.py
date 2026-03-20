@@ -231,6 +231,8 @@ class NativeAgent:
             turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
             last_input_tokens = response.usage.input_tokens if response.usage else 0
             last_cache_read_tokens = response.usage.cache_read_tokens if response.usage else 0
+            last_cache_creation_tokens = response.usage.cache_creation_tokens if response.usage else 0
+
             last_token_usage = response.usage
 
             # Accumulate cost into turn_usage
@@ -241,7 +243,7 @@ class NativeAgent:
             # Intermediate usage update — lets the channel show running token count
             yield UsageEvent(
                 usage=turn_usage.copy(), final=False,
-                context_tokens=last_input_tokens + last_cache_read_tokens,
+                context_tokens=last_input_tokens + last_cache_read_tokens + last_cache_creation_tokens,
                 context_window=self._context_window or None,
                 last_usage=last_token_usage,
             )
@@ -377,7 +379,7 @@ class NativeAgent:
 
         yield UsageEvent(
             usage=turn_usage,
-            context_tokens=last_input_tokens + last_cache_read_tokens,
+            context_tokens=last_input_tokens + last_cache_read_tokens + last_cache_creation_tokens,
             context_window=self._context_window or None,
             last_usage=last_token_usage,
         )
