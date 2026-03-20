@@ -180,7 +180,6 @@ class NativeAgent:
         max_iterations = config.max_iterations
         pre_loop_len = len(messages)
         reply = ""
-        turn_usage = UsageStats()  # per-message usage (yielded to channel)
         text_tail = ""       # last 2 chars of yielded text (for block-sep detection)
         had_nontext = False  # a non-text event was yielded since last TextDelta
         last_input_tokens = 0  # input_tokens from most recent LLM call (context size)
@@ -228,21 +227,15 @@ class NativeAgent:
 
             elapsed_ms = int((time.monotonic() - t0) * 1000)
             self._accumulate_usage(response, elapsed_ms)
-            turn_usage.accumulate_token_usage(response.usage, elapsed_ms)
             last_input_tokens = response.usage.input_tokens if response.usage else 0
             last_cache_read_tokens = response.usage.cache_read_tokens if response.usage else 0
             last_cache_creation_tokens = response.usage.cache_creation_tokens if response.usage else 0
 
             last_token_usage = response.usage
 
-            # Accumulate cost into turn_usage
-            if response.usage and self._pricing:
-                cost = compute_token_cost(response.usage, self._pricing) * self._quota_factor
-                turn_usage.total_cost_usd += cost
-
             # Intermediate usage update — lets the channel show running token count
             yield UsageEvent(
-                usage=turn_usage.copy(), final=False,
+                usage=self.get_usage().copy(), final=False,
                 context_tokens=last_input_tokens + last_cache_read_tokens + last_cache_creation_tokens,
                 context_window=self._context_window or None,
                 last_usage=last_token_usage,
@@ -378,7 +371,7 @@ class NativeAgent:
         )
 
         yield UsageEvent(
-            usage=turn_usage,
+            usage=self.get_usage(),
             context_tokens=last_input_tokens + last_cache_read_tokens + last_cache_creation_tokens,
             context_window=self._context_window or None,
             last_usage=last_token_usage,
@@ -473,6 +466,10 @@ class NativeAgent:
     def _accumulate_usage(self, response: ChatResponse, duration_ms: int = 0) -> None:
         stats = self._usage.setdefault("_default", UsageStats())
         stats.accumulate_token_usage(response.usage, duration_ms)
+        # Accumulate cost into session-level stats
+        if response.usage and self._pricing:
+            cost = compute_token_cost(response.usage, self._pricing) * self._quota_factor
+            stats.total_cost_usd += cost
 
     def get_usage(self) -> UsageStats:
         return self._usage.get("_default", UsageStats())

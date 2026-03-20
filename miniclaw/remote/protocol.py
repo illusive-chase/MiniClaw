@@ -245,8 +245,11 @@ def serialize_ping() -> dict[str, Any]:
     return {"type": "ping"}
 
 
-def serialize_healthcheck() -> dict[str, Any]:
-    return {"type": "healthcheck"}
+def serialize_healthcheck(env: dict[str, str] | None = None) -> dict[str, Any]:
+    msg: dict[str, Any] = {"type": "healthcheck"}
+    if env:
+        msg["env"] = env
+    return msg
 
 
 # ---------------------------------------------------------------------------

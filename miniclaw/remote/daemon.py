@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -323,33 +324,51 @@ class RemoteDaemon:
 
     async def _handle_healthcheck(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
         """Run `claude -p 'hi'` locally and report success/failure."""
+        logger.info("[DAEMON] Healthcheck request received")
+
+        # Build subprocess env: inherit daemon env, overlay client-provided auth
+        client_env = msg.get("env")
+        sub_env: dict[str, str] | None = None
+        if client_env:
+            sub_env = {**os.environ, **client_env}
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p", "hi",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=sub_env,
             )
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            await ws.send_json({
+            ok = proc.returncode == 0
+            logger.info("[DAEMON] Healthcheck subprocess completed: returncode=%s ok=%s", proc.returncode, ok)
+            result = {
                 "type": "healthcheck_result",
-                "ok": proc.returncode == 0,
+                "ok": ok,
                 "output": stdout.decode(errors="replace").strip(),
                 "error": stderr.decode(errors="replace").strip(),
-            })
+            }
         except asyncio.TimeoutError:
-            await ws.send_json({
+            logger.warning("[DAEMON] Healthcheck subprocess timed out after 30s")
+            result = {
                 "type": "healthcheck_result",
                 "ok": False,
                 "output": "",
                 "error": "healthcheck timed out after 30s",
-            })
+            }
         except Exception as e:
-            await ws.send_json({
+            logger.error("[DAEMON] Healthcheck subprocess failed: %s", e)
+            result = {
                 "type": "healthcheck_result",
                 "ok": False,
                 "output": "",
                 "error": str(e),
-            })
+            }
+
+        try:
+            await ws.send_json(result)
+        except Exception as e:
+            logger.warning("[DAEMON] Failed to send healthcheck result (client disconnected?): %s", e)
 
     async def _handle_spawn(self, ws: web.WebSocketResponse, msg: dict[str, Any]) -> None:
         """Handle a spawn request — create or re-attach a session."""

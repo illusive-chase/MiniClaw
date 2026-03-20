@@ -397,33 +397,68 @@ class CLIListener(Listener):
             console.print(f"[red]{e}[/red]")
             return
 
+        logger.info("Remote check: resolved '%s' -> %s", remote, ws_url)
         console.print(f"[dim]Connecting to {remote} ({ws_url})...[/dim]")
 
         try:
             async with aiohttp.ClientSession() as http:
                 async with http.ws_connect(ws_url, timeout=10) as ws:
-                    await ws.send_json({"type": "healthcheck"})
+                    # Build auth env the same way launch_agent does
+                    env: dict[str, str] = {}
+                    for key in (
+                        "ANTHROPIC_API_KEY",
+                        "ANTHROPIC_BASE_URL",
+                        "ANTHROPIC_AUTH_TOKEN",
+                        "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+                    ):
+                        val = os.environ.get(key)
+                        if val:
+                            env[key] = val
+                    if runtime and runtime.env:
+                        env.update(runtime.env)
+
+                    await ws.send_json({"type": "healthcheck", "env": env})
+                    logger.debug("Healthcheck request sent to %s", remote)
+
+                    got_result = False
                     async for ws_msg in ws:
                         if ws_msg.type == aiohttp.WSMsgType.TEXT:
-                            data = json.loads(ws_msg.data)
+                            try:
+                                data = json.loads(ws_msg.data)
+                            except json.JSONDecodeError:
+                                logger.warning("Malformed JSON from %s: %s", remote, ws_msg.data[:200])
+                                console.print(f"[red]Received malformed response from {remote}.[/red]")
+                                break
                             if data.get("type") == "healthcheck_result":
+                                got_result = True
                                 if data.get("ok"):
+                                    logger.info("Healthcheck OK for %s", remote)
                                     console.print(
                                         f"[green]OK[/green] — {remote} claude CLI is working.\n"
                                         f"[dim]  output: {data.get('output', '')[:200]}[/dim]"
                                     )
                                 else:
+                                    logger.info("Healthcheck FAIL for %s: %s", remote, data.get("error", "unknown"))
                                     console.print(
                                         f"[red]FAIL[/red] — {remote} claude CLI check failed.\n"
                                         f"[red]  error: {data.get('error', 'unknown')}[/red]"
                                     )
                                 break
+                            else:
+                                logger.debug("Ignoring message type '%s' from %s", data.get("type"), remote)
                         elif ws_msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                            logger.warning("WebSocket closed unexpectedly during healthcheck for %s", remote)
                             console.print(f"[red]WebSocket closed unexpectedly.[/red]")
                             break
+
+                    if not got_result:
+                        logger.warning("No healthcheck result received from %s (connection ended)", remote)
+                        console.print(f"[red]No response received from {remote} — the remote may have disconnected.[/red]")
         except asyncio.TimeoutError:
+            logger.warning("Connection to %s timed out", remote)
             console.print(f"[red]Connection to {remote} timed out.[/red]")
         except Exception as e:
+            logger.warning("Failed to connect to %s: %s", remote, e)
             console.print(f"[red]Failed to connect to {remote}: {e}[/red]")
 
     async def _resolve_remote_url(self, remote: str, runtime: Runtime) -> str:

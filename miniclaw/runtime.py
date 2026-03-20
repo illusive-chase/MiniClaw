@@ -41,6 +41,7 @@ class Runtime:
         self._shutting_down = False
         self._plugctx_config = plugctx_config or {}
         self._remotes_config = remotes_config or {}
+        self.env: dict[str, str] = {}
 
         from miniclaw.remote.tunnel import TunnelManager
         self._tunnel_manager = TunnelManager()
@@ -225,15 +226,53 @@ class Runtime:
             if failed:
                 logger.warning("Failed to auto-load contexts: %s", failed)
 
+    @staticmethod
+    def _make_serializable(obj: object) -> object:
+        """Recursively convert *obj* to JSON-safe primitives.
+
+        Unlike ``dataclasses.asdict``, this never uses ``copy.deepcopy`` /
+        pickle, so it is safe for objects that contain unpicklable types
+        (e.g. aiohttp's CIMultiDictProxy).
+        """
+        import dataclasses
+        from pathlib import PurePath
+
+        if obj is None or isinstance(obj, (str, int, float, bool)):
+            return obj
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return {
+                f.name: Runtime._make_serializable(getattr(obj, f.name))
+                for f in dataclasses.fields(obj)
+            }
+        if isinstance(obj, dict):
+            return {k: Runtime._make_serializable(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [Runtime._make_serializable(v) for v in obj]
+        if isinstance(obj, PurePath):
+            return str(obj)
+        # Last resort — str() is always safe and preserves debuggability.
+        return str(obj)
+
     def persist_session(self, session_id: str) -> None:
         """Save session to disk."""
-        from dataclasses import asdict
-
         session = self.sessions[session_id]
         if not session.history:
             return
 
         from miniclaw.persistence import PersistedSession
+
+        # Build config dict using _make_serializable instead of
+        # dataclasses.asdict — the latter deep-copies via pickle, which
+        # fails on non-picklable objects (e.g. aiohttp's CIMultiDictProxy)
+        # stored in extra under _-prefixed internal keys.
+        sanitized_config = self._make_serializable(session.agent_config)
+        # Strip internal (_-prefixed) keys from extra — they hold runtime-only
+        # objects (ToolPathContext, RemoteReader, …) that must not be persisted.
+        sanitized_config["extra"] = {
+            k: v
+            for k, v in sanitized_config.get("extra", {}).items()
+            if not k.startswith("_")
+        }
 
         legacy = PersistedSession(
             id=session.id,
@@ -242,17 +281,7 @@ class Runtime:
             updated_at=session.metadata.updated_at,
             name=session.metadata.name,
             agent_type=session.agent.agent_type,
-            agent_config={
-                k: v
-                for k, v in asdict(session.agent_config).items()
-                if k != "extra"
-            } | {
-                "extra": {
-                    k: v
-                    for k, v in session.agent_config.extra.items()
-                    if not k.startswith("_")
-                }
-            },
+            agent_config=sanitized_config,
             agent_state=session.agent.serialize_state(),
             metadata={
                 "forked_from": session.metadata.forked_from,
