@@ -100,7 +100,12 @@ class RunTool(Tool):
     def _build_env(runtime) -> dict[str, str]:
         """Collect env vars: ANTHROPIC from process env + runtime.env."""
         env: dict[str, str] = {}
-        for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"):
+        for key in (
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        ):
             val = os.environ.get(key)
             if val:
                 env[key] = val
