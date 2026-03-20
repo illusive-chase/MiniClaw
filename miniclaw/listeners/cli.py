@@ -76,6 +76,7 @@ class CLIListener(Listener):
         # Event signaling that the current response is done
         self._response_done = asyncio.Event()
         self._response_done.set()  # start in "ready" state
+        self._agent_busy = False
 
         # Start background consumer
         consume_task = asyncio.create_task(self._consume(session, channel))
@@ -137,7 +138,16 @@ class CLIListener(Listener):
                     session.submit(line, "user")
                     await self._response_done.wait()
 
-                except (EOFError, KeyboardInterrupt):
+                except EOFError:
+                    _print_session_exit(console, self._session)
+                    console.print("\n[dim]Goodbye![/dim]")
+                    break
+                except KeyboardInterrupt:
+                    # If the agent is processing in the background (e.g. async
+                    # result from a subagent), interrupt it instead of exiting.
+                    if self._agent_busy:
+                        session.interrupt()
+                        continue
                     _print_session_exit(console, self._session)
                     console.print("\n[dim]Goodbye![/dim]")
                     break
@@ -153,7 +163,9 @@ class CLIListener(Listener):
         """Background task: consume session.run() and render via channel."""
         try:
             async for stream, source in session.run():
+                self._agent_busy = True
                 await channel.send_stream(stream)
+                self._agent_busy = False
                 self._response_done.set()
         except asyncio.CancelledError:
             pass
