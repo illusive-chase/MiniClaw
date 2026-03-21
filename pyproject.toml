@@ -21,6 +21,7 @@ dependencies = [
 [project.scripts]
 miniclaw = "miniclaw.main:main"
 minicode = "miniclaw.cc_main:main"
+miniclaw-diag-cache = "miniclaw.diag_cache:main"
 
 [tool.setuptools]
 packages = [

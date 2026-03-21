@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 class AnthropicProvider(Provider):
     """Provider for Anthropic Claude API."""
 
-    def __init__(self, api_key: str, base_url: str = None, model: str = "claude-sonnet-4-6", max_tokens: int = 8192):
+    def __init__(self, api_key: str, base_url: str = None, model: str = "claude-sonnet-4-6", max_tokens: int = 8192, delay: float = 0.0):
         self._model = model
         self._max_tokens = max_tokens
         self._client = AsyncAnthropic(api_key=api_key, base_url=base_url)
+        self._delay = delay
 
     @staticmethod
     def _mark_last_block(blocks: list[dict]) -> None:
@@ -78,12 +79,12 @@ class AnthropicProvider(Provider):
             if api_msgs:
                 last_msg = api_msgs[-1]
                 if isinstance(last_msg["content"], list):
-                    # self._mark_last_block(last_msg["content"])
+                    self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
                 elif isinstance(last_msg["content"], str) and last_msg["content"]:
                     # Convert plain string to block format so we can attach cache_control
                     last_msg["content"] = [{"type": "text", "text": last_msg["content"]}]
-                    # self._mark_last_block(last_msg["content"])
+                    self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
         else:
             system = ""
@@ -92,6 +93,8 @@ class AnthropicProvider(Provider):
             "[PROVIDER] Cache breakpoints: %s",
             ", ".join(cache_breakpoints) if cache_breakpoints else "none",
         )
+        if self._delay > 0.0:
+            time.sleep(self._delay)
 
         return system, api_msgs
 
@@ -127,7 +130,7 @@ class AnthropicProvider(Provider):
             kwargs["system"] = system
         if tools:
             api_tools = self._to_api_tools(tools)
-            # self._mark_last_block(api_tools)  # Cache tool definitions
+            self._mark_last_block(api_tools)  # Cache tool definitions
             kwargs["tools"] = api_tools
             logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 
@@ -200,7 +203,7 @@ class AnthropicProvider(Provider):
             kwargs["system"] = system
         if tools:
             api_tools = self._to_api_tools(tools)
-            # self._mark_last_block(api_tools)  # Cache tool definitions
+            self._mark_last_block(api_tools)  # Cache tool definitions
             kwargs["tools"] = api_tools
             logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 

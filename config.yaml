@@ -11,6 +11,7 @@ provider:
     write: 25
     cache_read: 0.5
     cache_write: 6.25
+  delay: 5.0
 
 channel:
   type: "cli"
@@ -47,6 +48,10 @@ remotes:
 logging:
   file_level: "debug"
   console_level: "info"
+
+statusline:
+  command: "python3 .workspace/statusline.py"
+  timeout: 5.0
 
 plugctx:
   auto_load:

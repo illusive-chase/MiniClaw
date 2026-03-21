@@ -12,6 +12,7 @@ def create_provider(config: dict) -> Provider:
     model = config.get("model", "")
 
     max_tokens = int(config.get("max_tokens", 8192))
+    delay = float(config.get("delay", 0.0))
 
     if provider_type == "anthropic":
         return AnthropicProvider(
@@ -19,6 +20,7 @@ def create_provider(config: dict) -> Provider:
             base_url=config.get("base_url"),
             model=model or "claude-sonnet-4-6",
             max_tokens=max_tokens,
+            delay=delay,
         )
     else:
         return OpenAIProvider(
