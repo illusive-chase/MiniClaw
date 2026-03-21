@@ -78,13 +78,12 @@ class AnthropicProvider(Provider):
             if api_msgs:
                 last_msg = api_msgs[-1]
                 if isinstance(last_msg["content"], list):
-                    self._mark_last_block(last_msg["content"])
+                    # self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
                 elif isinstance(last_msg["content"], str) and last_msg["content"]:
                     # Convert plain string to block format so we can attach cache_control
-                    last_msg["content"] = [
-                        {"type": "text", "text": last_msg["content"], "cache_control": {"type": "ephemeral"}},
-                    ]
+                    last_msg["content"] = [{"type": "text", "text": last_msg["content"]}]
+                    # self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
         else:
             system = ""
@@ -128,7 +127,7 @@ class AnthropicProvider(Provider):
             kwargs["system"] = system
         if tools:
             api_tools = self._to_api_tools(tools)
-            self._mark_last_block(api_tools)  # Cache tool definitions
+            # self._mark_last_block(api_tools)  # Cache tool definitions
             kwargs["tools"] = api_tools
             logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 
@@ -201,7 +200,7 @@ class AnthropicProvider(Provider):
             kwargs["system"] = system
         if tools:
             api_tools = self._to_api_tools(tools)
-            self._mark_last_block(api_tools)  # Cache tool definitions
+            # self._mark_last_block(api_tools)  # Cache tool definitions
             kwargs["tools"] = api_tools
             logger.info("[PROVIDER] Cache breakpoint: tools(%d definitions)", len(api_tools))
 
