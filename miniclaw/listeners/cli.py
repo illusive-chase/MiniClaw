@@ -681,6 +681,7 @@ class CLIListener(Listener):
             requires = [d.strip() for d in deps_raw.split(",") if d.strip()]
 
         workspace = ""
+        has_existing_code = False
         if ctx_type == "project":
             q2 = InteractionRequest(
                 id=str(uuid4()),
@@ -694,17 +695,57 @@ class CLIListener(Listener):
                                 {"label": os.getcwd(), "description": "Current directory"},
                             ],
                         },
+                        {
+                            "question": "Does this project have existing code?",
+                            "options": [
+                                {"label": "yes", "description": "Agent will explore the codebase"},
+                                {"label": "no", "description": "Starting from scratch"},
+                            ],
+                        },
                     ],
                 },
             )
             r2 = await channel._prompt_ask_user(q2)
             ws_answers = r2.updated_input.get("answers", {}) if r2.updated_input else {}
             workspace = ws_answers.get("Workspace folder path?", os.getcwd()).strip()
+            has_existing_code = (
+                ws_answers.get("Does this project have existing code?", "no")
+                .strip()
+                .lower()
+                == "yes"
+            )
 
         result = session.plugctx.init_context(dotted_path, ctx_type, requires, workspace)
         if result.get("error"):
             console.print(f"[red]Error: {result['error']}[/red]")
-        elif result.get("created"):
-            console.print(f"[green]Created context '{dotted_path}' at {result['path']}[/green]")
-        else:
+            return
+        if not result.get("created"):
             console.print(f"[dim]Context not created: {result}[/dim]")
+            return
+
+        fs_path = result["path"]
+        console.print(f"[green]Created context '{dotted_path}' at {fs_path}[/green]")
+
+        # Auto-load the authoring guide context if available
+        if not session.plugctx._registry.is_loaded("skill.plugctx.create"):
+            try:
+                session.plugctx.load("skill.plugctx.create")
+            except Exception:
+                pass  # graceful skip if not found
+
+        # Build handoff message for the agent
+        lines = [
+            "[plugctx-init] Context scaffolded. Continue the creation workflow.",
+            f"path: {dotted_path}",
+            f"type: {ctx_type}",
+            f"requires: {', '.join(requires) if requires else 'none'}",
+            f"has_existing_code: {str(has_existing_code).lower()}",
+            f"fs_path: {fs_path}",
+        ]
+        if ctx_type == "project" and workspace:
+            lines.append(f"workspace: {workspace}")
+
+        handoff_msg = "\n".join(lines)
+        self._response_done.clear()
+        session.submit(handoff_msg, "user")
+        await self._response_done.wait()
