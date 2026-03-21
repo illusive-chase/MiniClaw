@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from miniclaw.plugctx.vpath import CTX_SCHEME, WORKSPACE_SCHEME, detect_protocol, resolve_ctx, resolve_workspace
+from miniclaw.plugctx.vpath import (
+    CTX_SCHEME,
+    WORKSPACE_SCHEME,
+    detect_protocol,
+    resolve_ctx,
+    resolve_workspace,
+)
 
 from .base import Tool, ToolPathContext, ToolResult
 
@@ -32,7 +38,7 @@ class GlobTool(Tool):
                 },
                 "path": {
                     "type": "string",
-                    "description": "Directory to search in (relative, absolute, ctx://, or workspace://). Defaults to workspace root.",
+                    "description": "Directory to search in (relative, absolute, ctx://, or workspace://).",
                 },
             },
             "required": ["pattern"],

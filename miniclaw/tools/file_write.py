@@ -23,7 +23,7 @@ class FileWriteTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to write (relative to workspace or absolute)",
+                    "description": "Path to the file to write (relative or absolute)",
                 },
                 "content": {
                     "type": "string",

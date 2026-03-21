@@ -23,6 +23,7 @@ from miniclaw.interactions import InteractionRequest, InteractionType
 from miniclaw.listeners.base import Listener
 from miniclaw.listeners.completer import SlashCommandCompleter
 from miniclaw.log import _console
+from miniclaw.types import UsageEvent
 
 if TYPE_CHECKING:
     from miniclaw.runtime import Runtime
@@ -174,17 +175,20 @@ class CLIListener(Listener):
 
     async def _consume(self, session: Session, channel: CLIChannel) -> None:
         """Background task: consume session.run() and render via channel."""
+
+        async def _refresh_statusline(event: UsageEvent) -> str:
+            if self._statusline_executor is not None:
+                from miniclaw.statusline import build_statusline_data
+                model = session.agent_config.model or getattr(session.agent, "default_model", "unknown")
+                data = build_statusline_data(event, model, session.id)
+                await self._statusline_executor.refresh(data)
+                return self._statusline_executor.text
+            return ""
+
         try:
             async for stream, source in session.run():
                 self._agent_busy = True
-                await channel.send_stream(stream)
-                # Refresh statusline after the turn completes
-                if self._statusline_executor is not None and channel._last_usage_event is not None:
-                    from miniclaw.statusline import build_statusline_data
-                    model = session.agent_config.model or getattr(session.agent, "default_model", "unknown")
-                    data = build_statusline_data(channel._last_usage_event, model, session.id)
-                    await self._statusline_executor.refresh(data)
-                    channel._statusline_text = self._statusline_executor.text
+                await channel.send_stream(stream, on_final_usage=_refresh_statusline)
                 self._agent_busy = False
                 self._response_done.set()
         except asyncio.CancelledError:

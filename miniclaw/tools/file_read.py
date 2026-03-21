@@ -2,7 +2,13 @@
 
 from pathlib import Path
 
-from miniclaw.plugctx.vpath import CTX_SCHEME, WORKSPACE_SCHEME, detect_protocol, resolve_ctx, resolve_workspace
+from miniclaw.plugctx.vpath import (
+    CTX_SCHEME,
+    WORKSPACE_SCHEME,
+    detect_protocol,
+    resolve_ctx,
+    resolve_workspace,
+)
 
 from .base import Tool, ToolPathContext, ToolResult
 
@@ -16,7 +22,7 @@ class FileReadTool(Tool):
         return "file_read"
 
     def description(self) -> str:
-        return "Read the contents of a file. Supports ctx:// and workspace:// virtual paths."
+        return "Read the contents of a file. Supports ctx:// virtual paths."
 
     def parameters_schema(self) -> dict:
         return {
@@ -24,7 +30,7 @@ class FileReadTool(Tool):
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to read (relative to workspace, absolute, ctx://, or workspace://)",
+                    "description": "Path to the file to read (relative, absolute, or ctx://)",
                 },
             },
             "required": ["path"],
@@ -45,6 +51,8 @@ class FileReadTool(Tool):
                 else:
                     return ToolResult(output="ctx:// paths require an active plugctx root.", success=False)
             elif scheme == WORKSPACE_SCHEME:
+                return ToolResult(output=f"Launch subagent to read {scheme} paths instead.", success=False)
+                # NOTE: disabled for now
                 if self._path_ctx and self._path_ctx.workspace:
                     if self._path_ctx.remote and self._path_ctx.remote_reader:
                         # Remote workspace: delegate to remote reader

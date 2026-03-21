@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from rich.console import Console, ConsoleOptions, Group, RenderResult
 from rich.live import Live
@@ -206,7 +206,7 @@ class CLIChannel(Channel):
                 info.append(f" {statusline_text}", style="dim italic")
             return info
 
-    async def send_stream(self, stream: AsyncIterator[AgentEvent]) -> None:
+    async def send_stream(self, stream: AsyncIterator[AgentEvent], on_final_usage: Callable | None = None) -> None:
         """Stream response to the console with progressive markdown."""
         buffer = ""
         empty_line = Text("")
@@ -242,6 +242,8 @@ class CLIChannel(Channel):
                 elif isinstance(event, UsageEvent):
                     if event.final:
                         self._last_usage_event = event
+                        if on_final_usage:
+                            self._statusline_text = await on_final_usage(event)
                         usage_renderable = self._render_usage(event, statusline_text=self._statusline_text)
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
                         final_panel = Panel(content, title="Assistant", border_style="magenta")
