@@ -57,16 +57,28 @@ class CLIListener(Listener):
         agent_type: str = "native",
         agent_config: AgentConfig | None = None,
         workspace_dir: str = "",
+        statusline_config: dict | None = None,
     ) -> None:
         self._agent_type = agent_type
         self._agent_config = agent_config or AgentConfig()
         self._workspace_dir = workspace_dir
         self._session: Session | None = None
+        self._statusline_config = statusline_config or {}
 
     async def run(self, runtime: Runtime) -> None:
         """Main REPL loop."""
         console = _console
         channel = CLIChannel(console=console)
+
+        # Create statusline executor if configured
+        sl_cmd = self._statusline_config.get("command", "")
+        if sl_cmd:
+            from miniclaw.statusline import StatusLineExecutor
+            self._statusline_executor: StatusLineExecutor | None = StatusLineExecutor(
+                sl_cmd, timeout=self._statusline_config.get("timeout", 2.0),
+            )
+        else:
+            self._statusline_executor = None
 
         # Create session
         session = runtime.create_session(self._agent_type, self._agent_config)
@@ -165,6 +177,13 @@ class CLIListener(Listener):
             async for stream, source in session.run():
                 self._agent_busy = True
                 await channel.send_stream(stream)
+                # Refresh statusline after the turn completes
+                if self._statusline_executor is not None and channel._last_usage_event is not None:
+                    from miniclaw.statusline import build_statusline_data
+                    model = session.agent_config.model or getattr(session.agent, "default_model", "unknown")
+                    data = build_statusline_data(channel._last_usage_event, model, session.id)
+                    await self._statusline_executor.refresh(data)
+                    channel._statusline_text = self._statusline_executor.text
                 self._agent_busy = False
                 self._response_done.set()
         except asyncio.CancelledError:

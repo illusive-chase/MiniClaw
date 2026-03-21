@@ -116,14 +116,17 @@ class ActivityFooter:
 
 
 class StreamDisplay:
-    """Composite renderable: Panel + ActivityFooter."""
+    """Composite renderable: Panel + optional statusline + ActivityFooter."""
 
-    def __init__(self, panel: Panel, footer: ActivityFooter) -> None:
+    def __init__(self, panel: Panel, footer: ActivityFooter, statusline_text: str = "") -> None:
         self._panel = panel
         self._footer = footer
+        self._statusline_text = statusline_text
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
         yield self._panel
+        if self._statusline_text:
+            yield Text(f"  {self._statusline_text}", style="dim italic")
         yield from self._footer.__rich_console__(console, options)
 
 
@@ -132,6 +135,8 @@ class CLIChannel(Channel):
 
     def __init__(self, console: Console) -> None:
         self._console = console
+        self._statusline_text: str = ""
+        self._last_usage_event: UsageEvent | None = None
 
     @staticmethod
     def _fmt_k(n: int) -> str:
@@ -206,12 +211,13 @@ class CLIChannel(Channel):
         final_panel = None  # set when final UsageEvent arrives; preserved in finally
         tracker = ActivityTracker()
         footer = ActivityFooter()
+        sl = self._statusline_text
         live = Live(console=self._console, refresh_per_second=8)
         live.start()
 
         try:
             spinner = Spinner("bouncingBall", text=Text("Thinking...", style="bold magenta"), style="bold magenta")
-            live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="magenta"), footer))
+            live.update(StreamDisplay(Panel(spinner, title="Assistant", border_style="magenta"), footer, sl))
 
             async for event in stream:
                 if isinstance(event, ActivityEvent):
@@ -219,7 +225,7 @@ class CLIChannel(Channel):
                     footer.update(tracker.snapshot())
                     content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="magenta")
-                    live.update(StreamDisplay(panel, footer))
+                    live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, InteractionRequest):
                     live.stop()
@@ -230,20 +236,21 @@ class CLIChannel(Channel):
                 elif isinstance(event, TextDelta):
                     buffer += event.text
                     panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="magenta")
-                    live.update(StreamDisplay(panel, footer))
+                    live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, UsageEvent):
                     if event.final:
+                        self._last_usage_event = event
                         usage_renderable = self._render_usage(event)
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
                         final_panel = Panel(content, title="Assistant", border_style="magenta")
-                        live.update(StreamDisplay(final_panel, footer))
+                        live.update(StreamDisplay(final_panel, footer, sl))
                     else:
                         # Intermediate: update spinner text with running token count
                         spinner.text = self._render_usage(event, spinner=True)
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="magenta")
-                        live.update(StreamDisplay(panel, footer))
+                        live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, InterruptedEvent):
                     buffer += "\n\n[interrupted]"
@@ -295,20 +302,23 @@ class CLIChannel(Channel):
                     live = Live(console=self._console, refresh_per_second=8)
                     live.start()
 
+                sl = self._statusline_text
+
                 if isinstance(event, ActivityEvent):
                     tracker.apply(event)
                     footer.update(tracker.snapshot())
                     content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                     panel = Panel(content, title="Assistant", border_style="magenta")
-                    live.update(StreamDisplay(panel, footer))
+                    live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, TextDelta):
                     buffer += event.text
                     panel = Panel(Group(Markdown(buffer), empty_line, spinner), title="Assistant", border_style="magenta")
-                    live.update(StreamDisplay(panel, footer))
+                    live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, UsageEvent):
                     if event.final:
+                        self._last_usage_event = event
                         usage_renderable = self._render_usage(event)
                         content = Group(Markdown(buffer), Text(""), usage_renderable) if buffer else usage_renderable
                         # Turn complete — finalize and stop Live
@@ -322,7 +332,7 @@ class CLIChannel(Channel):
                         content = Group(Markdown(buffer), empty_line, spinner) if buffer else spinner
                         panel = Panel(content, title="Assistant", border_style="magenta")
                         if live is not None:
-                            live.update(StreamDisplay(panel, footer))
+                            live.update(StreamDisplay(panel, footer, sl))
 
                 elif isinstance(event, InterruptedEvent):
                     buffer += "\n\n[interrupted]"

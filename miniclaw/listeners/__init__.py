@@ -25,6 +25,7 @@ def create_listener(
             agent_type=agent_type,
             agent_config=agent_config,
             workspace_dir=workspace_dir,
+            statusline_config=config.get("statusline", {}),
         )
 
     if channel_type == "feishu":

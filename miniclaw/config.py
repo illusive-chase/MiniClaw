@@ -93,6 +93,10 @@ DEFAULT_CONFIG = {
         "ctx_root": ".workspace/contexts",
         "auto_load": [],
     },
+    "statusline": {
+        "command": "",      # empty = disabled
+        "timeout": 2.0,
+    },
     "remotes": {},
 }
 
