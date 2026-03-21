@@ -20,16 +20,34 @@ logger = logging.getLogger(__name__)
 class RemoteReader:
     """Persistent connection to a remote daemon for file operations."""
 
+    RPC_TIMEOUT = 30  # seconds
+
     def __init__(self) -> None:
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._session: aiohttp.ClientSession | None = None
         self._lock = asyncio.Lock()
+        self._ws_url: str | None = None
+
+    @property
+    def is_alive(self) -> bool:
+        """Check if the WebSocket connection is open."""
+        return self._ws is not None and not self._ws.closed
 
     async def connect(self, ws_url: str) -> None:
         """Connect to the remote daemon's file operation endpoint."""
+        self._ws_url = ws_url
         self._session = aiohttp.ClientSession()
         self._ws = await self._session.ws_connect(ws_url)
         logger.info("[RemoteReader] Connected to %s", ws_url)
+
+    async def reconnect(self) -> None:
+        """Close existing connection and reconnect using stored URL."""
+        if not self._ws_url:
+            raise ConnectionError("No URL stored for reconnection")
+        await self.close()
+        self._session = aiohttp.ClientSession()
+        self._ws = await self._session.ws_connect(self._ws_url)
+        logger.info("[RemoteReader] Reconnected to %s", self._ws_url)
 
     async def file_read(self, path: str) -> str:
         """Read a file from the remote daemon."""
@@ -49,7 +67,14 @@ class RemoteReader:
             if self._ws is None or self._ws.closed:
                 raise ConnectionError("RemoteReader not connected")
             await self._ws.send_json(msg)
-            resp = await self._ws.receive_json()
+            try:
+                resp = await asyncio.wait_for(
+                    self._ws.receive_json(), timeout=self.RPC_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"Remote operation timed out after {self.RPC_TIMEOUT}s"
+                ) from None
             if resp.get("type") != expected_type:
                 error = resp.get("error", f"Unexpected response type: {resp.get('type')}")
                 raise RuntimeError(error)

@@ -333,7 +333,31 @@ class Session:
     async def _ensure_remote_reader(self, remote: str | None) -> None:
         """Lazily create or swap the RemoteReader for the active remote target."""
         if remote == self._remote_reader_target:
-            return  # already connected to the correct target
+            # Same target — but verify the connection is still alive
+            if self._remote_reader is not None and not self._remote_reader.is_alive:
+                logger.warning(
+                    "[SESSION %s] RemoteReader connection dead, reconnecting to %s",
+                    self.id, remote,
+                )
+                try:
+                    await self._remote_reader.reconnect()
+                    logger.info("[SESSION %s] RemoteReader reconnected: remote=%s", self.id, remote)
+                except Exception:
+                    logger.warning(
+                        "[SESSION %s] RemoteReader reconnect failed, creating fresh connection",
+                        self.id, exc_info=True,
+                    )
+                    try:
+                        await self._remote_reader.close()
+                    except Exception:
+                        pass
+                    self._remote_reader = None
+                    self._remote_reader_target = None
+                    # Fall through to create a new reader below
+                else:
+                    return
+            else:
+                return  # alive and connected
 
         # Close stale reader (target changed or unloaded)
         if self._remote_reader is not None:
