@@ -71,11 +71,12 @@ class CLIListener(Listener):
         channel = CLIChannel(console=console)
 
         # Create statusline executor if configured
-        sl_cmd = self._statusline_config.get("command", "")
-        if sl_cmd:
+        sl_script = self._statusline_config.get("script", "")
+        if sl_script:
             from miniclaw.statusline import StatusLineExecutor
             self._statusline_executor: StatusLineExecutor | None = StatusLineExecutor(
-                sl_cmd, timeout=self._statusline_config.get("timeout", 2.0),
+                sl_script, workspace_dir=self._workspace_dir,
+                timeout=self._statusline_config.get("timeout", 2.0),
             )
         else:
             self._statusline_executor = None

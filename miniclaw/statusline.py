@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
+import shlex
+from pathlib import Path
 
 from miniclaw.types import UsageEvent
 
@@ -19,8 +20,9 @@ class StatusLineExecutor:
     on stdout. The result is cached and displayed during subsequent turns.
     """
 
-    def __init__(self, command: str, timeout: float = 2.0) -> None:
-        self._command = os.path.expanduser(command)
+    def __init__(self, script: str, workspace_dir: str, timeout: float = 2.0) -> None:
+        script_path = Path(workspace_dir) / script
+        self._command = f"python3 {shlex.quote(str(script_path))}"
         self._timeout = timeout
         self._cached_text = ""
 

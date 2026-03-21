@@ -94,7 +94,7 @@ DEFAULT_CONFIG = {
         "auto_load": [],
     },
     "statusline": {
-        "command": "",      # empty = disabled
+        "script": "",       # empty = disabled
         "timeout": 2.0,
     },
     "remotes": {},

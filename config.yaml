@@ -50,7 +50,7 @@ logging:
   console_level: "info"
 
 statusline:
-  command: "python3 .workspace/statusline.py"
+  script: "statusline.py"
   timeout: 5.0
 
 plugctx:
