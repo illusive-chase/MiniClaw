@@ -7,13 +7,13 @@ import asyncio
 import logging
 import os
 
-from miniclaw.config import load_config
-from miniclaw.log import setup_console_logging, setup_file_logging
-from miniclaw.persistence import SessionManager
 from miniclaw.agent.cc import CCAgent
 from miniclaw.agent.cc_tmux import CCTmuxAgent
 from miniclaw.agent.config import AgentConfig
+from miniclaw.config import load_config
 from miniclaw.listeners import create_listener
+from miniclaw.log import setup_console_logging, setup_file_logging
+from miniclaw.persistence import SessionManager
 from miniclaw.runtime import Runtime
 
 
@@ -122,7 +122,7 @@ def main() -> None:
     runtime.register_agent("native", build_native_agent)
 
     # Add listener (CLI or Feishu, based on config)
-    listener = create_listener(config, agent_type="ccagent", agent_config=agent_config, workspace_dir=workspace_dir)
+    listener = create_listener(config, agent_type="ccagent", agent_config=agent_config, workspace_dir=workspace_dir, ccagent_config=cc_cfg)
     runtime.add_listener(listener)
 
     # Run

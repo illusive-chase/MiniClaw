@@ -13,6 +13,7 @@ def create_listener(
     agent_type: str,
     agent_config: AgentConfig,
     workspace_dir: str,
+    ccagent_config: dict | None = None,
 ) -> Listener:
     """Create a listener based on ``config["channel"]["type"]``."""
     channel_cfg = config.get("channel", {})
@@ -26,6 +27,7 @@ def create_listener(
             agent_config=agent_config,
             workspace_dir=workspace_dir,
             statusline_config=config.get("statusline", {}),
+            ccagent_config=ccagent_config,
         )
 
     if channel_type == "feishu":
