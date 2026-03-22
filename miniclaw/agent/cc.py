@@ -119,6 +119,14 @@ class CCAgent:
         )
         sdk_session_id = self._sdk_session_id or self._extract_sdk_session_id(history)
         plugctx_prompt = config.extra.get("_plugctx_prompt", "")
+        if plugctx_prompt:
+            from miniclaw.plugctx.vpath import resolve_virtual_paths
+            path_ctx = config.extra.get("_path_ctx")
+            plugctx_prompt = resolve_virtual_paths(
+                plugctx_prompt,
+                ctx_root=path_ctx.ctx_root if path_ctx else None,
+                workspace=path_ctx.workspace if path_ctx else None,
+            )
         effective_cwd = config.extra.get("_effective_cwd") or self._cwd
         runtime_env = config.extra.get("_runtime_env")
         options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd, env=runtime_env)

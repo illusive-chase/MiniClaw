@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from miniclaw.plugctx.loader import dotted_to_fs_path
@@ -35,3 +36,35 @@ def resolve_ctx(relative: str, ctx_root: Path) -> Path:
 def resolve_workspace(relative: str, workspace: str) -> str:
     """Resolve workspace://path to absolute path string."""
     return str(Path(workspace) / relative)
+
+
+# Matches workspace:// or ctx:// followed by the relative path.
+# Stops at whitespace, quotes, backticks, angle brackets, parens, etc.
+_VPATH_RE = re.compile(r'(workspace://|ctx://)([^\s"\'`()<>,;\[\]]*)')
+
+
+def resolve_virtual_paths(
+    text: str,
+    ctx_root: Path | None,
+    workspace: str | None,
+) -> str:
+    """Replace all workspace:// and ctx:// URIs in *text* with absolute paths.
+
+    URIs whose scheme cannot be resolved (missing ctx_root or workspace)
+    are left unchanged.
+    """
+
+    def _replace(m: re.Match) -> str:
+        scheme = m.group(1)
+        relative = m.group(2)
+        if scheme == WORKSPACE_SCHEME:
+            if workspace is not None:
+                return resolve_workspace(relative, workspace)
+            return m.group(0)  # leave as-is
+        if scheme == CTX_SCHEME:
+            if ctx_root is not None:
+                return str(resolve_ctx(relative, ctx_root))
+            return m.group(0)
+        return m.group(0)
+
+    return _VPATH_RE.sub(_replace, text)

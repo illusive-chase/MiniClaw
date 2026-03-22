@@ -178,6 +178,14 @@ class CCTmuxAgent:
 
         # Build combined system prompt
         plugctx = config.extra.get("_plugctx_prompt", "")
+        if plugctx:
+            from miniclaw.plugctx.vpath import resolve_virtual_paths
+            path_ctx = config.extra.get("_path_ctx")
+            plugctx = resolve_virtual_paths(
+                plugctx,
+                ctx_root=path_ctx.ctx_root if path_ctx else None,
+                workspace=path_ctx.workspace if path_ctx else None,
+            )
         combined_prompt = "\n\n".join(filter(None, [self._system_prompt, plugctx]))
 
         # Event queue consumed by the event loop
