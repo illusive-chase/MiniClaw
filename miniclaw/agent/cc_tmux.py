@@ -176,6 +176,9 @@ class CCTmuxAgent:
         temp_dir = self._ensure_temp_dir()
         sock_path = os.path.join(temp_dir, "hook.sock")
 
+        # Resolve effective cwd (e.g. from project-plugctx)
+        effective_cwd = config.extra.get("_effective_cwd") or self._cwd
+
         # Build combined system prompt
         plugctx = config.extra.get("_plugctx_prompt", "")
         if plugctx:
@@ -205,6 +208,7 @@ class CCTmuxAgent:
                 system_prompt=combined_prompt,
                 is_resume=is_resume,
                 sock_path=sock_path,
+                cwd=effective_cwd,
             )
 
             # Wait for CC CLI to start up
@@ -244,7 +248,7 @@ class CCTmuxAgent:
             await self._exit_cc_cli()
 
         # Read session file for results
-        reader = SessionReader(self._cwd, self._cc_session_id)
+        reader = SessionReader(effective_cwd, self._cc_session_id)
         turn_result = reader.read_new_messages(after_line=self._line_watermark)
         self._line_watermark = turn_result.watermark
 
@@ -625,6 +629,7 @@ class CCTmuxAgent:
         system_prompt: str,
         is_resume: bool,
         sock_path: str,
+        cwd: str | None = None,
     ) -> None:
         """Start CC CLI in a tmux session."""
         if self._tmux_session:
@@ -677,8 +682,9 @@ class CCTmuxAgent:
             )
 
         cmd = " ".join(cmd_parts)
-        if self._cwd and self._cwd != ".":
-            cmd = f"cd {shlex.quote(self._cwd)} && {cmd}"
+        effective_cwd = cwd or self._cwd
+        if effective_cwd and effective_cwd != ".":
+            cmd = f"cd {shlex.quote(effective_cwd)} && {cmd}"
         logger.debug("[CCTmux] Starting CC CLI: %s", cmd)
         await self._run_tmux("send-keys", "-t", name, cmd, "Enter")
 
