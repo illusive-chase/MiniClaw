@@ -67,7 +67,8 @@ def main() -> None:
     def build_ccagent(cfg, runtime_context=None):
         from miniclaw.agent.cc import CCAgent
 
-        if cfg.backend == "cctmux":
+        effective_backend = cfg.backend or cc_cfg.get("backend", "ccsdk")
+        if effective_backend == "cctmux":
             from miniclaw.agent.cc_tmux import CCTmuxAgent
 
             return CCTmuxAgent(
