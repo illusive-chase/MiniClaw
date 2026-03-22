@@ -749,13 +749,10 @@ class CCTmuxAgent:
         if not self._tmux_session:
             return
 
-        if "\n" in text or len(text) > 4000:
-            await self._run_tmux("load-buffer", "-", input_data=text.encode())
-            await self._run_tmux("paste-buffer", "-t", self._tmux_session)
-            await self._run_tmux("send-keys", "-t", self._tmux_session, "Enter")
-        else:
-            await self._run_tmux("send-keys", "-t", self._tmux_session, "-l", text)
-            await self._run_tmux("send-keys", "-t", self._tmux_session, "Enter")
+        await self._run_tmux("load-buffer", "-", input_data=text.encode())
+        await self._run_tmux("paste-buffer", "-t", self._tmux_session)
+        time.sleep(5)
+        await self._run_tmux("send-keys", "-t", self._tmux_session, "Enter")
 
     async def _send_interrupt(self) -> None:
         """Send Ctrl-C to abort current operation."""
