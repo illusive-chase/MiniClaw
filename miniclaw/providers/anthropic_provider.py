@@ -25,10 +25,10 @@ class AnthropicProvider(Provider):
         self._delay = delay
 
     @staticmethod
-    def _mark_last_block(blocks: list[dict], idx: int = -1) -> None:
+    def _mark_last_block(blocks: list[dict]) -> None:
         """Add cache_control to the last block in a list (in-place)."""
-        if blocks and -len(blocks) <= idx < len(blocks):
-            blocks[idx]["cache_control"] = {"type": "ephemeral"}
+        if blocks:
+            blocks[-1]["cache_control"] = {"type": "ephemeral"}
 
     def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str | list[dict], list[dict]]:
         """Convert ChatMessages to Anthropic format. Returns (system, messages).
@@ -76,15 +76,15 @@ class AnthropicProvider(Provider):
             system = [{"type": "text", "text": system_text}]
             self._mark_last_block(system)  # Always cache system prompt
             cache_breakpoints.append(f"system({len(system_text)} chars)")
-            if api_msgs:
-                last_msg = api_msgs[-1]
+            if len(api_msgs) > 1:
+                last_msg = api_msgs[-2]
                 if isinstance(last_msg["content"], list):
-                    self._mark_last_block(last_msg["content"], -2)
+                    self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
                 elif isinstance(last_msg["content"], str) and last_msg["content"]:
                     # Convert plain string to block format so we can attach cache_control
                     last_msg["content"] = [{"type": "text", "text": last_msg["content"]}]
-                    self._mark_last_block(last_msg["content"], -2)
+                    self._mark_last_block(last_msg["content"])
                     cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
         else:
             system = ""
