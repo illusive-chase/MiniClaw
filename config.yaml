@@ -2,7 +2,7 @@ provider:
   type: "anthropic"
   api_key: "${MINICLAW_ANTHROPIC_API_KEY}"
   base_url: "${MINICLAW_ANTHROPIC_BASE_URL}"
-  model: "claude-opus-4-6"
+  model: "熊猫-按量-顶级特供-官max-claude-opus-4.6"
   temperature: 0.7
   context_window: 200000
   quota_factor: 3
@@ -11,7 +11,7 @@ provider:
     write: 25
     cache_read: 0.5
     cache_write: 6.25
-  delay: 5.0
+  delay: 0.0
 
 channel:
   type: "cli"
