@@ -80,6 +80,7 @@ class SlashCommandCompleter(Completer):
             CommandSpec(names=["cost"], meta="show usage stats"),
             CommandSpec(names=["pwd"], meta="show working directory"),
             CommandSpec(names=["quit", "exit", "q"], meta="exit the REPL"),
+            CommandSpec(names=["cclaunch"], meta="launch Claude Code with current config"),
             CommandSpec(
                 names=["effort"],
                 meta="set thinking effort",

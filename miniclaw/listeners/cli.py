@@ -59,12 +59,14 @@ class CLIListener(Listener):
         agent_config: AgentConfig | None = None,
         workspace_dir: str = "",
         statusline_config: dict | None = None,
+        ccagent_config: dict | None = None,
     ) -> None:
         self._agent_type = agent_type
         self._agent_config = agent_config or AgentConfig()
         self._workspace_dir = workspace_dir
         self._session: Session | None = None
         self._statusline_config = statusline_config or {}
+        self._ccagent_config = ccagent_config or {}
 
     async def run(self, runtime: Runtime) -> None:
         """Main REPL loop."""
@@ -223,6 +225,7 @@ class CLIListener(Listener):
                 "  /rename <name>    Rename current session\n"
                 "  /logging <level>  Set console log level\n"
                 "  /plugctx <cmd>    Manage loaded contexts (init/load/unload/list/status/info)\n"
+                "  /cclaunch         Launch Claude Code CLI with current config\n"
                 "  /remote-check <n> Check remote daemon health\n"
                 "  /pwd              Show current working directory\n"
                 "  /cd [path]        Change working directory (no args = reset)\n"
@@ -395,6 +398,9 @@ class CLIListener(Listener):
         elif cmd == "remote-check":
             await self._handle_remote_check(args, runtime, console)
 
+        elif cmd == "cclaunch":
+            await self._handle_cclaunch(args, session, runtime, channel, console)
+
         else:
             console.print(f"[red]Unknown command: /{cmd}. Type /help for available commands.[/red]")
 
@@ -516,6 +522,139 @@ class CLIListener(Listener):
             return tunnel.ws_url
 
         return entry
+
+    async def _handle_cclaunch(
+        self,
+        args: str,
+        session: Session,
+        runtime: Runtime,
+        channel: CLIChannel,
+        console: Console,
+    ) -> None:
+        """Launch Claude Code CLI with current session configuration."""
+        import tempfile
+        import uuid
+
+        # --- 1. Collect configuration ---
+        cc_cfg = self._ccagent_config
+        claude_bin = cc_cfg.get("claude_bin", "claude")
+        model = session.agent_config.model or cc_cfg.get("model", "claude-sonnet-4-6")
+        effort = session.agent_config.effort or cc_cfg.get("effort", "medium")
+        permission_mode = cc_cfg.get("permission_mode", "default")
+        allowed_tools = cc_cfg.get("allowed_tools") or []
+        cwd, _ = session.effective_cwd()
+
+        # System prompt from plugctx
+        system_prompt = ""
+        if session.plugctx is not None:
+            system_prompt = session.plugctx.render_prompt_section()
+
+        # Env vars from plugctx runtime
+        env_vars: dict[str, str] = {}
+        if session.plugctx is not None:
+            rt = session.plugctx.active_runtime()
+            if rt and rt.env:
+                env_vars = dict(rt.env)
+
+        # --- 2. Preview panel ---
+        prompt_info = "(none)"
+        prompt_tempfile = ""
+        if system_prompt:
+            token_est = len(system_prompt) // 4  # rough estimate
+            prompt_tempfile = os.path.join(
+                tempfile.gettempdir(), f"miniclaw-cclaunch-{uuid.uuid4().hex[:8]}.md"
+            )
+            prompt_info = f"~{token_est:,} tokens (will write to {prompt_tempfile})"
+
+        tools_str = ", ".join(allowed_tools) if allowed_tools else "(none)"
+        env_str = "(none)"
+        if env_vars:
+            preview_vars = [f"{k}=..." for k in list(env_vars.keys())[:3]]
+            env_str = f"{', '.join(preview_vars)} ({len(env_vars)} var{'s' if len(env_vars) != 1 else ''})"
+
+        preview_lines = [
+            f"  Binary:        {claude_bin}",
+            f"  Project dir:   {cwd}",
+            f"  Model:         {model}",
+            f"  Effort:        {effort}",
+            f"  Permission:    {permission_mode}",
+            f"  Allowed tools: {tools_str}",
+            f"  System prompt: {prompt_info}",
+            f"  Env vars:      {env_str}",
+        ]
+        console.print(Panel(
+            "\n".join(preview_lines),
+            title="/cclaunch Preview",
+            border_style="magenta",
+        ))
+
+        # --- 3. Confirmation prompt ---
+        confirm_req = InteractionRequest(
+            id=str(uuid4()),
+            type=InteractionType.ASK_USER,
+            tool_name="cclaunch",
+            tool_input={
+                "questions": [
+                    {
+                        "question": "Launch Claude Code with these settings?",
+                        "options": [
+                            {"label": "yes", "description": "Launch now"},
+                            {"label": "no", "description": "Cancel"},
+                        ],
+                    },
+                ],
+            },
+        )
+        resp = await channel._prompt_ask_user(confirm_req)
+        answers = resp.updated_input.get("answers", {}) if resp.updated_input else {}
+        answer = answers.get("Launch Claude Code with these settings?", "no").strip().lower()
+        if answer != "yes":
+            console.print("[dim]Cancelled.[/dim]")
+            return
+
+        # --- 4. Launch ---
+        # Write system prompt to temp file
+        if system_prompt and prompt_tempfile:
+            with open(prompt_tempfile, "w") as f:
+                f.write(system_prompt)
+            console.print(f"[dim]System prompt written to: {prompt_tempfile}[/dim]")
+
+        # Persist session
+        try:
+            runtime.persist_session(session.id)
+            console.print(f"[dim]Session saved: {session.id}[/dim]")
+        except Exception as e:
+            logger.warning("Failed to persist session before cclaunch: %s", e)
+
+        # Build argv
+        argv = [claude_bin]
+        if system_prompt and prompt_tempfile:
+            argv.extend(["--append-system-prompt-file", prompt_tempfile])
+        argv.extend(["--model", model])
+        if effort:
+            argv.extend(["--effort", effort])
+        argv.extend(["--permission-mode", permission_mode])
+        if allowed_tools:
+            for tool in allowed_tools:
+                argv.extend(["--allowedTools", tool])
+
+        # Set env vars
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+        # Clear blocked env vars (same as cc_tmux.py)
+        for var in (
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_AGENT_SDK_VERSION",
+            "CLAUDECODE",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
+        ):
+            os.environ.pop(var, None)
+
+        # chdir and exec
+        os.chdir(cwd)
+        console.print(f"[bold magenta]Launching:[/bold magenta] {' '.join(argv)}")
+        os.execvp(claude_bin, argv)
 
     async def _handle_plugctx(
         self,

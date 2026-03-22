@@ -123,7 +123,7 @@ def main() -> None:
         agent_type = "ccagent"
 
     # Add listener (CLI or Feishu, based on config)
-    listener = create_listener(config, agent_type=agent_type, agent_config=agent_config, workspace_dir=workspace_dir)
+    listener = create_listener(config, agent_type=agent_type, agent_config=agent_config, workspace_dir=workspace_dir, ccagent_config=cc_cfg)
     runtime.add_listener(listener)
 
     # Run

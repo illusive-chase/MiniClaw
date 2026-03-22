@@ -92,7 +92,7 @@ def main() -> None:
     runtime.register_agent("ccagent", build_ccagent)
 
     # Add listener (CLI or Feishu, based on config)
-    listener = create_listener(config, agent_type="native", agent_config=agent_config, workspace_dir=workspace_dir)
+    listener = create_listener(config, agent_type="native", agent_config=agent_config, workspace_dir=workspace_dir, ccagent_config=config.get("ccagent", {}))
     runtime.add_listener(listener)
 
     # Run
