@@ -140,6 +140,10 @@ class CCTmuxAgent:
 
     @property
     def agent_type(self) -> str:
+        return "ccagent"
+
+    @property
+    def backend(self) -> str:
         return "cctmux"
 
     @property

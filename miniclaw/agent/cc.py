@@ -94,6 +94,10 @@ class CCAgent:
         return "ccagent"
 
     @property
+    def backend(self) -> str:
+        return "ccsdk"
+
+    @property
     def default_model(self) -> str:
         return self._default_model
 

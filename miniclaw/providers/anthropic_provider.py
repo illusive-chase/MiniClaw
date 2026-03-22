@@ -27,7 +27,7 @@ class AnthropicProvider(Provider):
     @staticmethod
     def _mark_last_block(blocks: list[dict], idx: int = -1) -> None:
         """Add cache_control to the last block in a list (in-place)."""
-        if blocks and 0 <= ((idx + len(blocks)) % len(blocks)) < len(blocks):
+        if blocks and -len(blocks) <= idx < len(blocks):
             blocks[idx]["cache_control"] = {"type": "ephemeral"}
 
     def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str | list[dict], list[dict]]:

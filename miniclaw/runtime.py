@@ -307,6 +307,12 @@ class Runtime:
         # Use persisted agent_type, fall back to "native" for old files
         agent_type = loaded.agent_type or "native"
 
+        # Backward compat: old sessions persisted with agent_type="cctmux"
+        if agent_type == "cctmux":
+            agent_type = "ccagent"
+            if loaded.agent_config:
+                loaded.agent_config.setdefault("backend", "cctmux")
+
         # Rebuild AgentConfig from persisted data, fall back to defaults
         config = AgentConfig(**loaded.agent_config) if loaded.agent_config else AgentConfig()
 

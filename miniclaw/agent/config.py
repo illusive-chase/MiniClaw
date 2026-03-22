@@ -14,6 +14,7 @@ class AgentConfig:
     """
 
     model: str = ""
+    backend: str = ""  # implementation backend (e.g. "ccsdk", "cctmux"); empty = default
     system_prompt: str = ""
     tools: list[str] | None = None  # allowed tool names (None = all)
     max_iterations: int = 30

@@ -27,6 +27,11 @@ class AgentProtocol(Protocol):
         ...
 
     @property
+    def backend(self) -> str:
+        """Implementation backend (e.g. 'ccsdk', 'cctmux'). Empty for native."""
+        ...
+
+    @property
     def default_model(self) -> str:
         """Fallback model name when no override is provided."""
         ...

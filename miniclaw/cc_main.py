@@ -50,16 +50,35 @@ def main() -> None:
     cc_cfg = config.get("ccagent", {})
     workspace_dir = config["agent"]["workspace_dir"]
 
+    # Determine backend (default: ccsdk)
+    backend = cc_cfg.get("backend", "ccsdk")
+    if backend not in ("ccsdk", "cctmux"):
+        logger.warning("Unknown ccagent backend %r, falling back to ccsdk", backend)
+        backend = "ccsdk"
+
     # Build agent config
     agent_config = AgentConfig(
         model=cc_cfg.get("model", "claude-sonnet-4-6"),
+        backend=backend,
         system_prompt=cc_cfg.get("system_prompt", ""),
         thinking=cc_cfg.get("thinking") is not None,
         effort=cc_cfg.get("effort", "medium"),
     )
 
-    # CCAgent factory — SDK-based (per-session)
+    # Unified CCAgent factory — dispatches on cfg.backend
     def build_ccagent(cfg, runtime_context=None):
+        effective_backend = cfg.backend or backend
+        if effective_backend == "cctmux":
+            return CCTmuxAgent(
+                system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
+                default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
+                permission_mode=cc_cfg.get("permission_mode", "default"),
+                cwd=cc_cfg.get("cwd") or os.getcwd(),
+                max_turns=cc_cfg.get("max_turns"),
+                claude_bin=cc_cfg.get("claude_bin", "claude"),
+                allowed_tools=cc_cfg.get("allowed_tools"),
+                effort=cc_cfg.get("effort", "medium"),
+            )
         return CCAgent(
             system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
             default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
@@ -70,19 +89,6 @@ def main() -> None:
             thinking=cc_cfg.get("thinking"),
             effort=cc_cfg.get("effort"),
             context_window=config.get("provider", {}).get("context_window", 0),
-        )
-
-    # CCTmuxAgent factory — hook-driven tmux backend (per-session)
-    def build_cctmux_agent(cfg, runtime_context=None):
-        return CCTmuxAgent(
-            system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
-            default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
-            permission_mode=cc_cfg.get("permission_mode", "default"),
-            cwd=cc_cfg.get("cwd") or os.getcwd(),
-            max_turns=cc_cfg.get("max_turns"),
-            claude_bin=cc_cfg.get("claude_bin", "claude"),
-            allowed_tools=cc_cfg.get("allowed_tools"),
-            effort=cc_cfg.get("effort", "medium"),
         )
 
     # NativeAgent factory (for sub-agents or other use)
@@ -111,19 +117,12 @@ def main() -> None:
         remotes_config=remotes_config or None,
     )
 
-    # Register agent factories
+    # Register agent factories (only "ccagent" and "native")
     runtime.register_agent("ccagent", build_ccagent)
-    runtime.register_agent("cctmux", build_cctmux_agent)
     runtime.register_agent("native", build_native_agent)
 
-    # Determine which agent type to use (default: ccagent, or cctmux if configured)
-    agent_type = cc_cfg.get("backend", "ccagent")
-    if agent_type not in ("ccagent", "cctmux"):
-        logger.warning("Unknown ccagent backend %r, falling back to ccagent", agent_type)
-        agent_type = "ccagent"
-
     # Add listener (CLI or Feishu, based on config)
-    listener = create_listener(config, agent_type=agent_type, agent_config=agent_config, workspace_dir=workspace_dir)
+    listener = create_listener(config, agent_type="ccagent", agent_config=agent_config, workspace_dir=workspace_dir)
     runtime.add_listener(listener)
 
     # Run

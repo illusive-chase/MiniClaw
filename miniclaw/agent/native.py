@@ -112,6 +112,10 @@ class NativeAgent:
         return "native"
 
     @property
+    def backend(self) -> str:
+        return ""
+
+    @property
     def default_model(self) -> str:
         return self._default_model
 

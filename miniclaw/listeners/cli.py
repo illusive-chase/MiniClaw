@@ -188,9 +188,13 @@ class CLIListener(Listener):
         try:
             async for stream, source in session.run():
                 self._agent_busy = True
-                await channel.send_stream(stream, on_final_usage=_refresh_statusline)
-                self._agent_busy = False
-                self._response_done.set()
+                try:
+                    await channel.send_stream(stream, on_final_usage=_refresh_statusline)
+                except Exception:
+                    logger.exception("Error processing agent stream")
+                finally:
+                    self._agent_busy = False
+                    self._response_done.set()
         except asyncio.CancelledError:
             pass
 

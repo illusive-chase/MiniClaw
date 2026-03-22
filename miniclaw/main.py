@@ -67,6 +67,19 @@ def main() -> None:
     def build_ccagent(cfg, runtime_context=None):
         from miniclaw.agent.cc import CCAgent
 
+        if cfg.backend == "cctmux":
+            from miniclaw.agent.cc_tmux import CCTmuxAgent
+
+            return CCTmuxAgent(
+                system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
+                default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),
+                permission_mode=cc_cfg.get("permission_mode", "default"),
+                cwd=cc_cfg.get("cwd") or os.getcwd(),
+                max_turns=cc_cfg.get("max_turns"),
+                claude_bin=cc_cfg.get("claude_bin", "claude"),
+                allowed_tools=cc_cfg.get("allowed_tools"),
+                effort=cc_cfg.get("effort", "medium"),
+            )
         return CCAgent(
             system_prompt=cc_cfg.get("system_prompt", cfg.system_prompt or ""),
             default_model=cc_cfg.get("model", cfg.model or "claude-sonnet-4-6"),

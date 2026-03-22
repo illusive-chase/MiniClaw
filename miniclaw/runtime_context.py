@@ -92,7 +92,7 @@ class RuntimeContext:
             cwd, _ = self._parent.effective_cwd()
 
         # Create child session via Runtime
-        agent_config = AgentConfig()
+        agent_config = AgentConfig(backend=self._parent.agent_config.backend)
         if env:
             agent_config.extra["_runtime_env"] = env
         child_session = self._runtime.create_session(agent_type, agent_config)
