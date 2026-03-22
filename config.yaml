@@ -5,7 +5,7 @@ provider:
   model: "熊猫-按量-顶级特供-官max-claude-opus-4.6"
   temperature: 0.7
   context_window: 200000
-  quota_factor: 3
+  quota_factor: 2.8125
   pricing:
     read: 5
     write: 25
