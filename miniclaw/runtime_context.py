@@ -155,6 +155,7 @@ class RuntimeContext:
             ws_url=ws_url,
             agent_type=agent_type,
             task=task,
+            agent_config={"backend": self._parent.agent_config.backend},
             cwd=cwd,
             single_turn=single_turn,
             env=env,

@@ -229,7 +229,8 @@ class RemoteDaemon:
         workspace_dir = self._config["agent"]["workspace_dir"]
 
         def build_ccagent(cfg: AgentConfig, runtime_context: Any = None) -> Any:
-            if cfg.backend == "cctmux":
+            effective_backend = cfg.backend or cc_cfg.get("backend", "ccsdk")
+            if effective_backend == "cctmux":
                 from miniclaw.agent.cc_tmux import CCTmuxAgent
 
                 return CCTmuxAgent(
