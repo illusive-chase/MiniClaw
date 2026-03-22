@@ -112,8 +112,8 @@ def main() -> None:
     parser.add_argument(
         "--delay",
         type=int,
-        default=5,
-        help="Seconds to wait between calls for cache propagation (default: 5)",
+        default=0,
+        help="Seconds to wait between calls for cache propagation (default: 0)",
     )
     args = parser.parse_args()
 

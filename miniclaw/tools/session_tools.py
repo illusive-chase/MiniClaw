@@ -72,9 +72,12 @@ class RunTool(Tool):
             remote = None
             env = self._build_env(None)
 
+        # Inherit parent's agent backend (e.g. "cctmux") instead of hardcoding
+        agent_type = self._ctx._parent.agent.agent_type
+
         try:
             session_id, warning = await self._ctx.spawn(
-                agent_type="ccagent",
+                agent_type=agent_type,
                 task=task,
                 remote=remote,
                 cwd=cwd,
@@ -182,7 +185,9 @@ class LaunchAgentTool(Tool):
         }
 
     async def execute(self, args: dict) -> ToolResult:
-        agent_type = args.get("type", "ccagent")
+        # Default to parent's agent backend instead of hardcoding "ccagent"
+        default_type = self._ctx._parent.agent.agent_type
+        agent_type = args.get("type", default_type)
         task = args.get("task", "")
         remote = args.get("remote")
         cwd = args.get("cwd")

@@ -140,7 +140,7 @@ class CCTmuxAgent:
 
     @property
     def agent_type(self) -> str:
-        return "ccagent"
+        return "cctmux"
 
     @property
     def default_model(self) -> str:
@@ -649,7 +649,10 @@ class CCTmuxAgent:
         cmd_parts.extend(["--settings", shlex.quote(settings_path)])
 
         if system_prompt and not is_resume:
-            cmd_parts.extend(["--append-system-prompt", shlex.quote(system_prompt)])
+            prompt_path = os.path.join(self._temp_dir, "system_prompt.txt")
+            with open(prompt_path, "w") as f:
+                f.write(system_prompt)
+            cmd_parts.extend(["--append-system-prompt-file", shlex.quote(prompt_path)])
         if self._default_model:
             cmd_parts.extend(["--model", shlex.quote(self._default_model)])
         if self._effort:
