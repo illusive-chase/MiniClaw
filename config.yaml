@@ -25,6 +25,9 @@ agent:
   max_tool_iterations: 50
   workspace_dir: ".workspace"
 
+ccagent:
+  backend: "cctmux"
+
 remotes:
   autodl4090:
     ssh_host: "connect.nmb1.seetacloud.com"
