@@ -26,9 +26,15 @@ class AnthropicProvider(Provider):
 
     @staticmethod
     def _mark_last_block(blocks: list[dict]) -> None:
-        """Add cache_control to the last block in a list (in-place)."""
-        if blocks:
-            blocks[-1]["cache_control"] = {"type": "ephemeral"}
+        """Add cache_control to the last cacheable block in a list (in-place).
+
+        Only 'text' and 'tool_result' blocks support cache_control.
+        Walks backwards to find the last eligible block.
+        """
+        for block in reversed(blocks):
+            if block.get("type") in ("text", "tool_result"):
+                block["cache_control"] = {"type": "ephemeral"}
+                return
 
     def _to_api_messages(self, messages: list[ChatMessage]) -> tuple[str | list[dict], list[dict]]:
         """Convert ChatMessages to Anthropic format. Returns (system, messages).
@@ -67,27 +73,29 @@ class AnthropicProvider(Provider):
             else:
                 api_msgs.append({"role": msg.role, "content": msg.content or ""})
 
-        # Mark the last content block of the last message for caching
-        
-
         # Convert system to block format with cache_control
         cache_breakpoints = []
         if system_text:
             system = [{"type": "text", "text": system_text}]
             self._mark_last_block(system)  # Always cache system prompt
             cache_breakpoints.append(f"system({len(system_text)} chars)")
-            if len(api_msgs) > 1:
-                last_msg = api_msgs[-2]
-                if isinstance(last_msg["content"], list):
-                    self._mark_last_block(last_msg["content"])
-                    cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
-                elif isinstance(last_msg["content"], str) and last_msg["content"]:
-                    # Convert plain string to block format so we can attach cache_control
-                    last_msg["content"] = [{"type": "text", "text": last_msg["content"]}]
-                    self._mark_last_block(last_msg["content"])
-                    cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
         else:
             system = ""
+
+        # Cache the last conversation message if past the first exchange
+        # (>1 non-system messages). This ensures the prefix up to the latest
+        # turn is a cache hit on subsequent calls.
+        non_system_count = sum(1 for m in messages if m.role != "system")
+        if non_system_count > 1 and api_msgs:
+            last_msg = api_msgs[-1]
+            if isinstance(last_msg["content"], list):
+                self._mark_last_block(last_msg["content"])
+                cache_breakpoints.append(f"last_msg({last_msg['role']}, {len(last_msg['content'])} blocks)")
+            elif isinstance(last_msg["content"], str) and last_msg["content"]:
+                # Convert plain string to block format so we can attach cache_control
+                last_msg["content"] = [{"type": "text", "text": last_msg["content"]}]
+                self._mark_last_block(last_msg["content"])
+                cache_breakpoints.append(f"last_msg({last_msg['role']}, str)")
 
         logger.info(
             "[PROVIDER] Cache breakpoints: %s",
