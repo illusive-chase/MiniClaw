@@ -95,6 +95,26 @@ class RuntimeContext:
         agent_config = AgentConfig(backend=self._parent.agent_config.backend)
         if env:
             agent_config.extra["_runtime_env"] = env
+
+        # For CCAgent subagents: resolve virtual paths in task text and
+        # build a mapping prompt so the SDK-driven agent can translate any
+        # remaining virtual URIs it encounters during execution.
+        if agent_type == "ccagent":
+            path_ctx = self._parent.agent_config.extra.get("_path_ctx")
+            ctx_root = path_ctx.ctx_root if path_ctx else None
+            workspace = path_ctx.workspace if path_ctx else None
+
+            if ctx_root or workspace:
+                from miniclaw.plugctx.vpath import (
+                    build_mapping_prompt,
+                    resolve_virtual_paths,
+                )
+
+                task = resolve_virtual_paths(task, ctx_root=ctx_root, workspace=workspace)
+                mapping = build_mapping_prompt(ctx_root, workspace)
+                if mapping:
+                    agent_config.extra["_vpath_mapping"] = mapping
+
         child_session = self._runtime.create_session(agent_type, agent_config)
         child_session.cwd_override = cwd
         child_session.is_subagent = True

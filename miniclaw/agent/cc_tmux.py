@@ -48,12 +48,14 @@ from miniclaw.usage import UsageStats
 
 logger = logging.getLogger(__name__)
 
-# Env vars that trigger API gateway blocking — must be cleared.
+# Gateway identity env vars — must be cleared so the child CC instance
+# isn't mistaken for a managed agent-SDK subprocess.
+# NOTE: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is intentionally NOT
+# included — it's a user preference, not a gateway marker.
 _BLOCKED_ENV_VARS = [
     "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_AGENT_SDK_VERSION",
     "CLAUDECODE",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
 ]
 
 # Hook bridge script — relays CC hook events to MiniClaw agent via Unix socket.
@@ -190,6 +192,9 @@ class CCTmuxAgent:
                 workspace=path_ctx.workspace if path_ctx else None,
             )
         combined_prompt = "\n\n".join(filter(None, [self._system_prompt, plugctx]))
+        vpath_mapping = config.extra.get("_vpath_mapping", "")
+        if vpath_mapping:
+            combined_prompt = "\n\n".join(filter(None, [combined_prompt, vpath_mapping]))
 
         # Event queue consumed by the event loop
         hook_queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue()

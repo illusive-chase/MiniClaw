@@ -129,7 +129,8 @@ class CCAgent:
             )
         effective_cwd = config.extra.get("_effective_cwd") or self._cwd
         runtime_env = config.extra.get("_runtime_env")
-        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd, env=runtime_env)
+        vpath_mapping = config.extra.get("_vpath_mapping", "")
+        options = self._build_options(sdk_session_id, effective_model, client_key=key, extra_prompt=plugctx_prompt, cwd=effective_cwd, env=runtime_env, vpath_mapping=vpath_mapping)
         logger.debug("[CC] Client ready: sdk_session_id=%s", sdk_session_id)
 
         reply_parts: list[str] = []
@@ -530,6 +531,7 @@ class CCAgent:
         extra_prompt: str = "",
         cwd: str | None = None,
         env: dict[str, str] | None = None,
+        vpath_mapping: str = "",
     ) -> ClaudeAgentOptions:
         opts: dict = {}
 
@@ -542,6 +544,8 @@ class CCAgent:
             append_parts.append(self._system_prompt)
         if extra_prompt:
             append_parts.append(extra_prompt)
+        if vpath_mapping:
+            append_parts.append(vpath_mapping)
         if append_parts:
             system_prompt_config["append"] = "\n\n".join(append_parts)
         opts["system_prompt"] = system_prompt_config

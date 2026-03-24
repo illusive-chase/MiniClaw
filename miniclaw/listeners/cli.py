@@ -646,12 +646,14 @@ class CLIListener(Listener):
         for k, v in env_vars.items():
             os.environ[k] = v
 
-        # Clear blocked env vars (same as cc_tmux.py)
+        # Clear gateway identity env vars so the child CC instance
+        # isn't mistaken for a managed agent-SDK subprocess.
+        # NOTE: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is intentionally
+        # preserved — it's a user preference, not a gateway marker.
         for var in (
             "CLAUDE_CODE_ENTRYPOINT",
             "CLAUDE_AGENT_SDK_VERSION",
             "CLAUDECODE",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
         ):
             os.environ.pop(var, None)
 

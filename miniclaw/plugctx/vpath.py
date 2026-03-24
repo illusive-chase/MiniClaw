@@ -68,3 +68,29 @@ def resolve_virtual_paths(
         return m.group(0)
 
     return _VPATH_RE.sub(_replace, text)
+
+
+def build_mapping_prompt(
+    ctx_root: Path | None,
+    workspace: str | None,
+) -> str:
+    """Build a human-readable mapping section for virtual path protocols.
+
+    Returns an empty string if neither root is available.
+    """
+    lines: list[str] = []
+    if workspace:
+        lines.append(f"- `workspace://` → {workspace}/")
+    if ctx_root:
+        lines.append(
+            f"- `ctx://` → Resolve by replacing dots with `/` under {ctx_root}/\n"
+            f"  Example: ctx://skill.feishu/docs/foo.md → {ctx_root}/skill/feishu/docs/foo.md"
+        )
+    if not lines:
+        return ""
+    return (
+        "## Virtual Path Mapping\n"
+        "The following virtual path protocols may appear in referenced documents:\n"
+        + "\n".join(lines)
+        + "\nWhen you encounter these protocols, translate them to real filesystem paths using the mapping above."
+    )
