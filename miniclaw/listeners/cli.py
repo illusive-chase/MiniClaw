@@ -542,8 +542,8 @@ class CLIListener(Listener):
         # --- 1. Collect configuration ---
         cc_cfg = self._ccagent_config
         claude_bin = cc_cfg.get("claude_bin", "claude")
-        model = session.agent_config.model or cc_cfg.get("model", "claude-sonnet-4-6")
-        effort = session.agent_config.effort or cc_cfg.get("effort", "medium")
+        model = 'claude-opus-4-6'
+        effort = 'high'
         permission_mode = cc_cfg.get("permission_mode", "default")
         allowed_tools = cc_cfg.get("allowed_tools") or []
         cwd, _ = session.effective_cwd()

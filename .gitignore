@@ -5,3 +5,4 @@ __pycache__/
 .claude/
 .DS_Store
 .playwright-cli/
+temp*

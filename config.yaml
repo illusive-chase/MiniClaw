@@ -2,7 +2,7 @@ provider:
   type: "anthropic"
   api_key: "${MINICLAW_ANTHROPIC_API_KEY}"
   base_url: "${MINICLAW_ANTHROPIC_BASE_URL}"
-  model: "claude-opus-4-6"
+  model: "${MINICLAW_ANTHROPIC_MODEL}"
   temperature: 0.7
   context_window: 200000
   quota_factor: 3
