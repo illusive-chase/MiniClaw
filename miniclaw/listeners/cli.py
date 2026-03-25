@@ -553,6 +553,16 @@ class CLIListener(Listener):
         if session.plugctx is not None:
             system_prompt = session.plugctx.render_prompt_section()
 
+            # Append virtual path mapping so CC can resolve ctx:// / workspace://
+            from miniclaw.plugctx.vpath import build_mapping_prompt
+
+            ctx_root = session.plugctx.ctx_root
+            rt = session.plugctx.active_runtime()
+            workspace = rt.workspace if rt else None
+            mapping = build_mapping_prompt(ctx_root, workspace)
+            if mapping:
+                system_prompt = system_prompt + "\n\n" + mapping if system_prompt else mapping
+
         # Env vars from plugctx runtime
         env_vars: dict[str, str] = {}
         if session.plugctx is not None:
